@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Système
+.DS_Store
+Thumbs.db
+
+# WireGuard
+*.key
+*.conf
+*.peer
+
+# Logs
+*.log
+logs/
+
+# OS spécifique
+*.exe
+*.dll
+*.lib
+*.o
+*.a
+*.la
+*.lo
