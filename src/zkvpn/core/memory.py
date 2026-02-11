@@ -183,7 +183,7 @@ class SecureMemoryStore:
             return False
     
     def clear(self) -> None:
-        """Clear all entries from memory."""
+        """Clear all entries from memory store."""
         with self._lock:
             # Securely clear all sensitive data
             for key, entry in self._store.items():
@@ -195,7 +195,7 @@ class SecureMemoryStore:
             
             self._store.clear()
             self._access_patterns.clear()
-            logger.info("Cleared all entries from memory")
+            logger.debug(f"Cleared memory store")
     
     def exists(self, key: str) -> bool:
         """Check if key exists and is not expired.

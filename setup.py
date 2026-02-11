@@ -46,3 +46,19 @@ setup(
     },
 )
 
+
+    entry_points={
+        "console_scripts": [
+            "zkvpn=zkvpn.cli.main:main",
+            "zkvpn-node=zkvpn.cli.main:cli",  # Alias
+        ],
+    },
+    install_requires=[
+        # ... existing requirements ...
+        "click>=8.1.0",
+        "rich>=13.5.0",
+        "humanize>=4.9.0",
+        "pyperclip>=1.8.2",
+        "qrcode>=7.4.0",
+        "pillow>=10.0.0",  # Required for QR codes
+    ],
