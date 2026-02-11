@@ -1,0 +1,69 @@
+Metadata-Version: 2.4
+Name: zk-vpn
+Version: 0.1.0
+Summary: Zero-Knowledge VPN with ZK-SNARK proofs
+Home-page: https://github.com/username/zk-vpn
+Author: Your Name
+Author-email: your.email@example.com
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Topic :: Security :: Cryptography
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: cryptography>=41.0.0
+Requires-Dist: pynacl>=1.5.0
+Requires-Dist: pycryptodome>=3.19.0
+Requires-Dist: asyncio>=3.4.3
+Requires-Dist: aiohttp>=3.9.0
+Requires-Dist: asyncssh>=2.14.0
+Requires-Dist: netifaces>=0.11.0
+Requires-Dist: psutil>=5.9.0
+Requires-Dist: rich>=13.5.0
+Requires-Dist: click>=8.1.0
+Requires-Dist: prompt-toolkit>=3.0.0
+Requires-Dist: tabulate>=0.9.0
+Requires-Dist: flask>=3.0.0
+Requires-Dist: flask-socketio>=5.3.0
+Requires-Dist: flask-cors>=4.0.0
+Requires-Dist: flask-login>=0.6.0
+Requires-Dist: pytest>=7.4.0
+Requires-Dist: pytest-asyncio>=0.21.0
+Requires-Dist: pytest-cov>=4.1.0
+Requires-Dist: pytest-mock>=3.11.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: toml>=0.10.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: qrcode>=7.4.0
+Requires-Dist: pillow>=10.0.0
+Requires-Dist: py-ecc>=6.0.0
+Requires-Dist: sympy>=1.12
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+# ZK-VPN Prototype
+
+Prototype fonctionnel de VPN Zero-Knowledge avec preuves ZK-SNARKs.
+
+## 🎯 Fonctionnalités
+- ✅ Preuves ZK pour "no logging"
+- ✅ Réseau P2P WireGuard modifié
+- ✅ Système de réputation basé sur preuves
+- ✅ Interface Termux/Web
+- ✅ Tests automatisés
+
+## 🚀 Installation rapide
+```bash
+curl -sSL https://raw.githubusercontent.com/[USER]/zk-vpn-prototype/main/install.sh | bash
