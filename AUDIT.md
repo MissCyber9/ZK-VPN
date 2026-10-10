@@ -88,10 +88,31 @@ Banc d'essai en namespaces Linux (client, serveur, routeur « FAI », site web) 
 - `zkvpn connect` renvoyait le code 0 même en cas d'échec ;
 - pas de repli quand le module noyau WireGuard est absent (conteneurs, VM) : repli sur `wireguard-go`.
 
+## Solutions apportées aux points restants (et ce qui est réellement vérifié)
+
+| Point | Solution | Vérifié ? |
+|---|---|---|
+| Cérémonie mono-partie | `scripts/ceremony.sh` : phase 1 publique, contributions indépendantes, balise publique, `verify` qui recompile le circuit et revérifie toute la chaîne, `finalize`. | **Oui** (3 contributeurs + balise, clé falsifiée rejetée, clé d'une autre cérémonie rejetée, preuves valides avec les nouvelles clés, preuve faite avec l'ancienne clé mono-partie rejetée). La phase 1 du test est locale (`--dev`) : **la vraie cérémonie exige de vraies personnes indépendantes** et un fichier Powers of Tau public. |
+| Installeur / unité systemd | `install.sh` indépendant de la distribution (famille Debian : apt ; famille RHEL : dnf), utilisateur système dédié `zkvpn`, un seul changement système (`ip_forward`), pare-feu seulement s'il est déjà actif. | **Ubuntu 24.04 : oui, de bout en bout** (`tests/distro/run.sh`, systemd PID 1 dans un conteneur à réseau isolé). **Debian 12 et Fedora 41 : non exécutés** ici (miroirs de paquets bloqués par la politique réseau de l'environnement) ; ils sont dans la matrice CI. |
+| Protection DNS | Backends `systemd-resolved` / `resolvconf` / `resolv.conf`, état persistant dans `/run/zkvpn` (le `disconnect` est un autre processus), DoT bloqué. | **Oui** sur réseau virtuel (backend `file`) ; les commandes `resolvectl` et `resolvconf` ne sont vérifiées que par tests unitaires. |
+| Plusieurs clients | Isolation client-à-client par `ZKVPN_FWD`. | **Oui** (2 clients simultanés, le serveur joint les deux, ils ne se joignent pas). |
+| IPv6 | Routes `::/1` + kill-switch `ip6tables`. | **Non vérifié ici** : le noyau de ce bac à sable n'a pas l'IPv6. Les tests existent et s'exécuteront en CI. |
+| Audit externe | `SECURITY.md` : périmètre, hypothèses de confiance, ce qui est testé, plan d'audit. | Ne remplace pas un audit. |
+
+Les tests ont été validés par **mutation** : supprimer l'isolation, le blocage DNS port 53 ou la restauration de `resolv.conf` fait échouer le test concerné.
+
+**Défauts supplémentaires trouvés par ces bancs (tous corrigés)** :
+- le client héritait de la clé privée du serveur quand les deux configurations coexistent sur la machine : même clé publique, et WireGuard ignore **silencieusement** le pair ;
+- l'unité systemd ne démarrait pas : `/dev/net/tun` inaccessible (`0600` en conteneur), `/run/wireguard` non créable par l'utilisateur du service, erreurs de `wireguard-go` illisibles ;
+- `disconnect` ne pouvait jamais restaurer le DNS (sauvegarde gardée en mémoire d'un autre processus) ;
+- `main.py` plantait si `/etc/zkvpn/.env` (0600 root) n'était pas lisible par l'utilisateur du service ;
+- `ceremony.sh verify` laissait un `trap RETURN` qui cassait `finalize`.
+
 ## Limites connues (non résolues)
-1. **Cérémonie de confiance mono-partie** : quiconque a gardé l'entropie du setup local peut forger des preuves. Production : cérémonie multipartite (phase 1 publique + phase 2 dédiée).
-2. **Non couvert par le banc** : `install.sh` de bout en bout et l'unité systemd (il faut une vraie machine ou une VM avec systemd), la protection DNS (elle réécrit `/etc/resolv.conf`, partagé entre namespaces), IPv6, plusieurs clients simultanés.
-3. **Canal d'admission en clair** : il ne transporte que des données publiques, mais un attaquant réseau peut bloquer ou ralentir l'admission, et la vérification coûte du CPU (bornée).
-4. **Liste blanche vide = toute identité valide est admise** (inscription ouverte, sybil possible). Renseigner `ZKVPN_AUTHORIZED_IDENTITIES` en production.
-5. **Identité** : le fichier secret n'est pas chiffré (protégé seulement par les permissions 0600).
-6. Pas d'audit externe : ne pas utiliser pour protéger des utilisateurs réels.
+1. **Aucune cérémonie réelle n'a eu lieu** : les clés livrées par `setup_circuits.sh` sont mono-partie. Tant qu'une cérémonie multipartite n'est pas faite avec des participants indépendants, quiconque a gardé l'entropie peut forger des preuves.
+2. **Debian, Fedora, IPv6, `resolvectl`/`resolvconf`** : code écrit et testé unitairement, pas exécuté en conditions réelles ici.
+3. **Machine physique** : tout a été testé sur réseau virtuel (namespaces + `wireguard-go`), pas avec le module noyau WireGuard ni sur une vraie carte réseau.
+4. **Canal d'admission en clair** : données publiques uniquement, mais un attaquant réseau peut le bloquer ou le ralentir ; la vérification coûte ~0,7 s de CPU (bornée par des limites de connexions et un sémaphore).
+5. **Liste blanche vide = toute identité valide est admise** (inscription ouverte). Renseigner `ZKVPN_AUTHORIZED_IDENTITIES` en production.
+6. **Identité** : le fichier secret n'est pas chiffré (permissions 0600 seulement).
+7. **Pas d'audit externe** : ne pas utiliser pour protéger des utilisateurs réels.
