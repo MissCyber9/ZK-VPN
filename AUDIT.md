@@ -53,7 +53,7 @@ Audit par lecture du code (tests non exécutés : pytest absent de l'environneme
 - README réécrit : statut maquette, pas de promesse « no logging ».
 
 ## Reste à faire
-1. **Vrai SNARK** (circom + snarkjs) : circuit corrigé, vérification liée à l'établissement de session. `circuits/no_logging.py` renvoie aussi une preuve codée en dur que `verify_proof` accepte dès que les champs existent.
+1. ~~Vrai SNARK~~ **Fait pour l'admission des clients** : `circuits/session_auth.circom` (Groth16/bn128, Poseidon), `src/zkvpn/zk/`, `scripts/setup_circuits.sh`. Le circuit prouve la connaissance de la clé secrète d'une identité pour un challenge lié à la clé WireGuard, avec fraîcheur et chaînage ; il ne prouve **pas** l'absence de logs. Limites : cérémonie de setup mono-partie (dev), pas de transport réseau des preuves, `ZKTunnel.connect()` et les preuves périodiques utilisent encore les stubs simulés de `circuits/` (désormais marqués comme tels).
 2. Kill-switch réseau (blocage du trafic hors tunnel, DoT/DoH), `disconnect` ne devrait pas supprimer l'interface côté serveur.
 3. `wireguard.py` : remplacer `subprocess.run` bloquant par des appels async, parsing IPv6 de `wg show`.
 4. `config set` : valider clé/valeur et ne pas afficher les valeurs.

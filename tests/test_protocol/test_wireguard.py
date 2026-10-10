@@ -178,18 +178,47 @@ class TestZKTunnel:
         assert tunnel._is_connected is False
     
     @patch.object(WireGuardInterface, 'add_peer')
-    async def test_add_client(self, mock_add_peer):
-        """Test adding client to server."""
+    async def test_add_client_requires_proof(self, mock_add_peer):
+        """By default a client without a ZK session proof is refused."""
         mock_add_peer.return_value = True
-        
         tunnel = ZKTunnel()
-        
-        with patch.object(tunnel, '_assign_client_ip') as mock_assign:
-            mock_assign.return_value = "10.0.0.10"
-            
-            result = await tunnel.add_client(PUB3)
-            
-            assert result is True
+
+        assert await tunnel.add_client(PUB3) is False
+        mock_add_peer.assert_not_called()
+
+    @patch.object(WireGuardInterface, 'add_peer')
+    async def test_add_client_rejects_invalid_proof(self, mock_add_peer):
+        from zkvpn.zk import SessionProof, VerifyResult
+        mock_add_peer.return_value = True
+        tunnel = ZKTunnel()
+        proof = SessionProof({}, [])
+
+        with patch.object(tunnel.auth, 'verify',
+                          AsyncMock(return_value=VerifyResult(False, "invalid proof"))):
+            assert await tunnel.add_client(PUB3, nonce="n", proof=proof) is False
+        mock_add_peer.assert_not_called()
+
+    @patch.object(WireGuardInterface, 'add_peer')
+    async def test_add_client_with_valid_proof(self, mock_add_peer):
+        from zkvpn.zk import SessionProof, VerifyResult
+        mock_add_peer.return_value = True
+        tunnel = ZKTunnel()
+        proof = SessionProof({}, [])
+
+        with patch.object(tunnel.auth, 'verify',
+                          AsyncMock(return_value=VerifyResult(True, pk="1"))), \
+             patch.object(tunnel, '_assign_client_ip', AsyncMock(return_value="10.0.0.10")):
+            assert await tunnel.add_client(PUB3, nonce="n", proof=proof) is True
+        mock_add_peer.assert_called_once()
+
+    @patch.object(WireGuardInterface, 'add_peer')
+    async def test_add_client_proof_optional_when_disabled(self, mock_add_peer):
+        mock_add_peer.return_value = True
+        tunnel = ZKTunnel()
+
+        with patch('zkvpn.protocol.tunnel.settings.require_client_proof', False), \
+             patch.object(tunnel, '_assign_client_ip', AsyncMock(return_value="10.0.0.10")):
+            assert await tunnel.add_client(PUB3) is True
 
 
 @pytest.mark.asyncio

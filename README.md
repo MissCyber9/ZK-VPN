@@ -4,9 +4,11 @@ Prototype de VPN WireGuard piloté en Python, avec une couche de « preuves » d
 à devenir un jour de vraies preuves zero-knowledge.
 
 > ⚠️ **Statut : maquette, non utilisable en production.**
-> Les « preuves ZK » actuelles sont **simulées** (hash SHA-256 et structures factices) :
-> elles ne prouvent rien cryptographiquement et peuvent être forgées.
-> Ce projet **ne garantit pas** l'absence de logs. Voir [AUDIT.md](AUDIT.md).
+> L'**admission des clients** utilise de vraies preuves Groth16 (`zkvpn.zk`), mais la
+> cérémonie de setup est locale et mono-partie (développement uniquement).
+> Les modules `zkvpn.circuits.*` (prover/verifier/no_logging) sont des **stubs simulés**
+> qui peuvent être forgés. Ce projet **ne prouve pas** l'absence de logs : aucune preuve ZK
+> ne le peut. Voir [AUDIT.md](AUDIT.md).
 
 ## Ce qui existe
 - Gestion d'une interface WireGuard via `wg` / `ip` (`src/zkvpn/protocol/wireguard.py`, `tunnel.py`)
@@ -14,11 +16,16 @@ Prototype de VPN WireGuard piloté en Python, avec une couche de « preuves » d
 - Stockage en mémoire avec TTL pour sessions, preuves et clés (`core/memory.py`)
 - Configuration par variables d'environnement `ZKVPN_*` (`core/config.py`)
 - CLI `zkvpn` (click / rich)
-- Preuve « no-logging » **simulée** (`circuits/`) ; un circuit circom d'esquisse
-  (`no_logging.circom`) existe mais **ne compile pas** encore
+- **Authentification ZK de session** (Groth16, circom + snarkjs) : le client prouve qu'il
+  connaît la clé secrète de son identité, pour un challenge du serveur **lié à sa clé
+  WireGuard**, avec horodatage frais et chaînage anti-rejeu (`zk/`, `src/zkvpn/zk/`,
+  `circuits/session_auth.circom`). Le serveur refuse les clients sans preuve valide
+  (`ZKVPN_REQUIRE_CLIENT_PROOF`, `ZKVPN_AUTHORIZED_IDENTITIES`).
+- Stubs de preuve « no-logging » **simulés** (`circuits/prover.py`, `verifier.py`, `no_logging.py`)
 
 ## Ce qui n'existe pas (encore)
-- Vrai système de preuve (SNARK) et vérification entre pairs
+- Transport réseau des preuves entre pairs (l'API `issue_challenge` / `add_client(proof=...)` existe, pas le protocole)
+- Cérémonie de confiance multipartite pour les clés de preuve
 - Réseau P2P, système de réputation, interface web
 - Kill-switch réseau complet
 
@@ -26,7 +33,8 @@ Prototype de VPN WireGuard piloté en Python, avec une couche de « preuves » d
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt -e .
-pytest
+scripts/setup_circuits.sh   # Node >= 18 : compile le circuit, génère les clés (~1 min)
+pytest                      # les tests ZK sont ignorés si les artefacts manquent
 ```
 
 L'installeur système (`scripts/install.sh`, Ubuntu/Debian, root) est expérimental :

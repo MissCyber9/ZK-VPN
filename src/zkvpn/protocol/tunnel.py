@@ -16,6 +16,7 @@ from zkvpn.core.memory import session_manager, memory_guard
 from zkvpn.circuits.prover import prover, Proof
 from zkvpn.circuits.verifier import verifier
 from zkvpn.protocol.wireguard import WireGuardInterface, WireGuardPeer, wg_interface
+from zkvpn.zk import SessionProof, SessionVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,8 @@ class ZKTunnel:
         self._is_connected = False
         self._current_session = None
         self._last_proof: Optional[Proof] = None
+        authorized = [i.strip() for i in settings.authorized_identities.split(",") if i.strip()]
+        self.auth = SessionVerifier(authorized=authorized or None)
         
         logger.info("ZK Tunnel initialized")
     
@@ -186,17 +189,38 @@ class ZKTunnel:
             logger.error(f"Failed to disconnect: {e}")
             return False
     
-    async def add_client(self, client_public_key: str, client_ip: Optional[str] = None) -> bool:
+    def issue_challenge(self) -> str:
+        """Create a single-use challenge a client must answer with a ZK session proof."""
+        return self.auth.issue_challenge()
+    
+    async def add_client(self, client_public_key: str, client_ip: Optional[str] = None,
+                         *, nonce: Optional[str] = None,
+                         proof: Optional[SessionProof] = None) -> bool:
         """Add client to server.
+        
+        When ``settings.require_client_proof`` is set (default), the client must
+        present a valid Groth16 session proof bound to ``nonce`` (from
+        ``issue_challenge``) and to ``client_public_key``.
         
         Args:
             client_public_key: Client's WireGuard public key
             client_ip: Assigned IP address (auto-assign if None)
+            nonce: Challenge previously issued to this client
+            proof: The client's ZK session proof
             
         Returns:
             bool: True if client added
         """
         try:
+            if settings.require_client_proof:
+                if proof is None or nonce is None:
+                    logger.warning("Client refused: ZK session proof required")
+                    return False
+                result = await self.auth.verify(proof, nonce, client_public_key)
+                if not result.valid:
+                    logger.warning(f"Client refused: {result.error}")
+                    return False
+            
             if not client_ip:
                 client_ip = await self._assign_client_ip()
             

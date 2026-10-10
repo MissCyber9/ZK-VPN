@@ -94,6 +94,18 @@ class Settings(BaseSettings):
         None,
         description="Path to trusted setup parameters"
     )
+    zk_dir: str = Field(
+        "./zk",
+        description="Directory with the ZK toolchain and build/ artifacts (scripts/setup_circuits.sh)"
+    )
+    require_client_proof: bool = Field(
+        True,
+        description="Server refuses clients that do not present a valid ZK session proof"
+    )
+    authorized_identities: str = Field(
+        "",
+        description="Comma-separated ZK identities (decimal pk) allowed to connect; empty = any valid identity"
+    )
     proof_generation_timeout: float = Field(
         2.0,
         ge=0.1,

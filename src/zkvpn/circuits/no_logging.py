@@ -1,4 +1,7 @@
-"""
+"""SIMULATED — NOT CRYPTOGRAPHIC. Development stub only: its 'proofs' can be forged.
+Real proofs live in ``zkvpn.zk`` (Groth16, see scripts/setup_circuits.sh).
+
+
 Circuit ZK pour prouver l'absence de logging
 Version: 0.1.0 (simulée)
 """

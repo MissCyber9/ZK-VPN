@@ -1,4 +1,7 @@
-"""Zero-knowledge prover for ZK-VPN.
+"""SIMULATED — NOT CRYPTOGRAPHIC. Development stub only: its 'proofs' can be forged.
+Real proofs live in ``zkvpn.zk`` (Groth16, see scripts/setup_circuits.sh).
+
+Zero-knowledge prover for ZK-VPN.
 
 Generates compact proofs that no logs are kept.
 All proofs are generated in RAM and never written to disk.
