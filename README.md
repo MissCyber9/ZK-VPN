@@ -11,4 +11,4 @@ Prototype fonctionnel de VPN Zero-Knowledge avec preuves ZK-SNARKs.
 
 ## 🚀 Installation rapide
 ```bash
-curl -sSL https://raw.githubusercontent.com/MissCyber9/ZK-VPN/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/MissCyber9/ZK-VPN/main/scripts/install.sh | bash

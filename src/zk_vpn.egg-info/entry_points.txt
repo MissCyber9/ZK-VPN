@@ -1,4 +1,0 @@
-[console_scripts]
-zkvpn = zkvpn.cli.main:main
-zkvpn-dashboard = zkvpn.web.dashboard:main
-zkvpn-node = zkvpn.nodes.server:main
