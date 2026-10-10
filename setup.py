@@ -12,7 +12,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 setup(
     name="zk-vpn",
     version="0.1.0",
-    description="Zero-Knowledge VPN prototype (WireGuard + simulated ZK proofs)",
+    description="Zero-Knowledge VPN prototype (WireGuard + Groth16 session authentication)",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/MissCyber9/ZK-VPN",
@@ -21,9 +21,11 @@ setup(
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
         "Topic :: Security :: Cryptography",
         "Programming Language :: Python :: 3",
     ],
+    license="MIT",
     python_requires=">=3.9",
     install_requires=requirements,
     entry_points={

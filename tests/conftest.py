@@ -2,8 +2,6 @@
 
 import pytest
 from zkvpn.core.memory import proof_store, session_manager, key_store
-from zkvpn.circuits.prover import prover
-from zkvpn.circuits.verifier import verifier
 
 
 @pytest.fixture(autouse=True)
@@ -14,15 +12,9 @@ async def clear_caches():
     session_manager._sessions.clear()
     key_store.clear()
     
-    # Clear circuit caches
-    await prover.clear_cache()
-    await verifier.clear_cache()
-    
     yield
     
     # Cleanup after test
     proof_store.clear()
     session_manager._sessions.clear()
     key_store.clear()
-    await prover.clear_cache()
-    await verifier.clear_cache()

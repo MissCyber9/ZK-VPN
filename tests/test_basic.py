@@ -6,9 +6,10 @@ def test_import_package():
     assert zkvpn.__version__ == "0.1.0"
 
 
-def test_circuits_module():
-    from zkvpn.circuits import no_logging
-    assert no_logging.NoLoggingCircuit().circuit_id == "no_logging_v1"
+def test_circuit_source_is_packaged():
+    from pathlib import Path
+    import zkvpn.circuits
+    assert (Path(zkvpn.circuits.__file__).parent / "session_auth.circom").is_file()
 
 
 def test_cli_structure():

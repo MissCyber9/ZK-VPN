@@ -188,7 +188,8 @@ class WireGuardInterface:
         Returns:
             bool: True if successful
         """
-        # Use provided key or generate new one
+        # Use provided key, else the configured one (ZKVPN_PRIVATE_KEY), else generate
+        private_key = private_key or settings.get_private_key()
         if private_key:
             self.private_key = private_key
             # Generate public key from private key

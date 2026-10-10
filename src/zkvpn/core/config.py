@@ -7,6 +7,7 @@ and never displayed in logs.
 
 import os
 import secrets
+from pathlib import Path
 import logging
 from typing import Optional, Literal, Dict, Any
 from functools import lru_cache
@@ -16,6 +17,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Configure module logger
 logger = logging.getLogger(__name__)
+
+
+def _default_zk_dir() -> str:
+    """``<repo>/zk`` for source checkouts / editable installs, else ``./zk``."""
+    candidate = Path(__file__).resolve().parents[3] / "zk"
+    return str(candidate) if candidate.is_dir() else "./zk"
 
 
 class Settings(BaseSettings):
@@ -86,20 +93,18 @@ class Settings(BaseSettings):
     )
     
     # ============ ZK CIRCUITS ============
-    circuit_path: str = Field(
-        "./circuits",
-        description="Path to compiled ZK circuits"
-    )
-    trusted_setup_file: Optional[str] = Field(
-        None,
-        description="Path to trusted setup parameters"
+    admission_port: int = Field(
+        51821,
+        ge=1024,
+        le=65535,
+        description="TCP port of the ZK admission server"
     )
     killswitch_enabled: bool = Field(
         True,
         description="Block all non-tunnel traffic while connected as a client"
     )
     zk_dir: str = Field(
-        "./zk",
+        default_factory=lambda: _default_zk_dir(),
         description="Directory with the ZK toolchain and build/ artifacts (scripts/setup_circuits.sh)"
     )
     require_client_proof: bool = Field(

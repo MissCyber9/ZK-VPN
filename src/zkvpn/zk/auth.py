@@ -9,8 +9,8 @@ Protocol
 
 What a valid proof establishes: the prover knows the secret key behind identity
 ``pk``; the proof was made for this server challenge *and this WireGuard key*
-(no replay, no transplanting onto another key); its timestamp is fresh; and it
-extends the identity's previous proof (``prev_tag`` chain).
+(no replay, no transplanting onto another key); and its timestamp is fresh.
+Optionally (``enforce_chain``) it also extends the identity's previous proof.
 
 It does not, and cannot, prove that the server keeps no logs.
 """
@@ -85,11 +85,16 @@ class SessionVerifier:
     def __init__(self, backend: Optional[SnarkBackend] = None,
                  authorized: Optional[Iterable[str]] = None,
                  challenge_ttl: float = 60.0, clock_tolerance: float = 30.0,
+                 enforce_chain: bool = False,
                  clock: Callable[[], float] = time.time):
         self.backend = backend or SnarkBackend()
         self.authorized = {str(a) for a in authorized} if authorized else None
         self.challenge_ttl = challenge_ttl
         self.clock_tolerance = clock_tolerance
+        # Replay is already prevented by single-use, key-bound challenges. Enforcing
+        # the prev_tag chain additionally requires clients to persist their last tag
+        # (and the server its state across restarts), so it is opt-in.
+        self.enforce_chain = enforce_chain
         self._clock = clock
         self._challenges: Dict[str, float] = {}   # nonce -> expiry
         self._last_tag: Dict[str, int] = {}       # pk -> last accepted tag
@@ -124,7 +129,7 @@ class SessionVerifier:
         pk = str(proof.pk)
         if self.authorized is not None and pk not in self.authorized:
             return self._fail("identity not authorized")
-        if proof.prev_tag != self._last_tag.get(pk, 0):
+        if self.enforce_chain and proof.prev_tag != self._last_tag.get(pk, 0):
             return self._fail("prev_tag does not extend the proof chain")
 
         try:

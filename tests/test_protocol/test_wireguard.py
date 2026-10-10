@@ -137,13 +137,17 @@ class TestZKTunnel:
         
         tunnel = ZKTunnel()
         
-        with patch.object(tunnel, '_enable_ip_forwarding') as mock_forward:
+        with patch.object(tunnel, '_enable_ip_forwarding') as mock_forward, \
+             patch('zkvpn.protocol.tunnel.AdmissionServer.start', AsyncMock()) as admission:
             mock_forward.return_value = None
             
             result = await tunnel.start_server()
             
             assert result is True
             assert tunnel._is_connected is True
+            admission.assert_awaited_once()
+        if tunnel._health_check_task:
+            tunnel._health_check_task.cancel()
     
     @patch.object(WireGuardInterface, 'configure_interface')
     @patch.object(WireGuardInterface, 'set_address')
@@ -171,7 +175,6 @@ class TestZKTunnel:
         
         tunnel = ZKTunnel()
         tunnel._is_connected = True
-        tunnel._proof_task = asyncio.create_task(asyncio.sleep(1))
         tunnel._health_check_task = asyncio.create_task(asyncio.sleep(1))
         
         result = await tunnel.disconnect()
