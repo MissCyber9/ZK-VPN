@@ -31,14 +31,30 @@ Audit par lecture du code (tests non exécutés : pytest absent de l'environneme
 - Tests `test_basic.py` : attrapent `ImportError` et ne peuvent pas échouer ; conflit `tests/test_circuits.py` / `tests/test_circuits/`.
 - Pas de CI, pas de fichier LICENSE.
 
-## Corrigé dans ce commit (packaging et hygiène)
-- `setup.py` n'était pas parsable (bloc orphelin) : réécrit ; entry points inexistants retirés ; auteur/URL corrigés.
-- `requirements.txt` : ajout de `pydantic`, `pydantic-settings`, `numpy`, `humanize`, `pyperclip` ; retrait de `asyncio` et des dépendances inutilisées ; tests déplacés dans `requirements-dev.txt`.
-- `install.sh` : chemin de clone (`zk-vpn-prototype/src` → `src`), `requirements.txt`, caractère non ASCII dans `tr`, fins de ligne CRLF (scripts non exécutables) ; README pointe vers `scripts/install.sh`.
-- Retrait du dépôt de `egg-info`, `*:Zone.Identifier`, `Nouveau document texte.TXT`, `current_deps.txt` ; `.gitignore` complété.
+## Corrigé (commits successifs)
+**Packaging et hygiène**
+- `setup.py` n'était pas parsable (bloc orphelin) : réécrit, entry points inexistants retirés.
+- `requirements.txt` corrigé (dépendances réellement importées) ; `requirements-dev.txt` ajouté.
+- `install.sh` : chemin de clone, `requirements.txt`, caractère non ASCII, fins de ligne CRLF des scripts.
+- Fichiers parasites retirés (`egg-info`, `*:Zone.Identifier`, `.TXT`, `current_deps.txt`) ; `.gitignore` complété.
 
-## Reste à faire (par priorité)
-1. Reformuler README (« no logging »/« ZK-SNARKs ») tant que la preuve est simulée.
-2. Vrai SNARK (circom + snarkjs), circuit corrigé, vérification intégrée à l'établissement de session.
-3. Durcissement réseau : kill-switch, `await` des commandes, capabilities systemd, validation des entrées, comparaison de versions Python dans `install.sh` (`bc` échoue sur `3.10`).
-4. Tests fiables + CI, licence.
+**Bugs trouvés en exécutant les tests (58 passent, contre 38 erreurs au départ)**
+- `memory_guard` (`@contextmanager` utilisé sur des méthodes `async`) ne protégeait rien : il se terminait avant l'`await`. Réécrit en garde sync/async.
+- La validation anti-traversée de chemin de `config.py` ne rejetait rien (`normpath` supprimait les `..` avant le contrôle).
+- `pytest.ini` ajouté (`asyncio_mode=auto`) : la fixture async `autouse` ne s'exécutait pas.
+- `tests/test_basic.py` et `test_circuits.py` avalaient toutes les exceptions (un test appelait une méthode inexistante et « passait ») : réécrits avec de vrais `assert`.
+- `test_config.py` déplacé hors du paquet de production, tests de régression ajoutés.
+
+**Durcissement**
+- `dns.py` : les commandes `iptables`/`ip6tables` sont maintenant attendues (`await proc.wait()`).
+- `wireguard.py` : validation des clés publiques, endpoints et `allowed_ips` avant `wg set` ; type `Any` corrigé.
+- `config.py` : plus de fausse « clé privée WireGuard » générée ; la clé vient de `wg genkey`.
+- `install.sh` : comparaison de version Python sans `bc`, UFW n'est plus désactivé/réinitialisé, unité systemd avec `CAP_NET_ADMIN`/`CAP_NET_RAW` (non testée sous systemd).
+- README réécrit : statut maquette, pas de promesse « no logging ».
+
+## Reste à faire
+1. **Vrai SNARK** (circom + snarkjs) : circuit corrigé, vérification liée à l'établissement de session. `circuits/no_logging.py` renvoie aussi une preuve codée en dur que `verify_proof` accepte dès que les champs existent.
+2. Kill-switch réseau (blocage du trafic hors tunnel, DoT/DoH), `disconnect` ne devrait pas supprimer l'interface côté serveur.
+3. `wireguard.py` : remplacer `subprocess.run` bloquant par des appels async, parsing IPv6 de `wg show`.
+4. `config set` : valider clé/valeur et ne pas afficher les valeurs.
+5. Migrer les `@validator` pydantic v1 vers `@field_validator`, ajouter une CI et une licence.

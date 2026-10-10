@@ -148,11 +148,10 @@ class Settings(BaseSettings):
     @validator("wireguard_config_dir")
     def validate_config_dir(cls, v: str) -> str:
         """Validate and sanitize config directory path."""
-        # Remove any path traversal attempts
-        v = os.path.normpath(v)
-        if ".." in v:
+        # Reject traversal before normalising (normpath would collapse "..")
+        if ".." in v.replace("\\", "/").split("/"):
             raise ValueError("Path traversal detected in wireguard_config_dir")
-        return v
+        return os.path.normpath(v)
     
     @validator("network_cidr")
     def validate_cidr(cls, v: str) -> str:
@@ -189,13 +188,8 @@ class Settings(BaseSettings):
         """Initialize settings with secure defaults."""
         super().__init__(**kwargs)
         
-        # Auto-generate private key if not provided
-        if not self.private_key:
-            # In production, this would call wg genkey
-            # For now, generate a secure random string
-            dummy_key = secrets.token_urlsafe(32)
-            self.private_key = SecretStr(dummy_key)
-            logger.debug("Auto-generated WireGuard private key")
+        # The private key is NOT auto-generated here: WireGuardInterface
+        # generates a valid keypair with `wg genkey` when none is configured.
         
         # Log non-sensitive configuration
         safe_config = self.redact_sensitive()

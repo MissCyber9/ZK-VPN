@@ -68,8 +68,8 @@ check_requirements() {
     fi
     
     PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    if [[ $(echo "$PYTHON_VERSION < 3.8" | bc) -eq 1 ]]; then
-        error "Python 3.8+ required (found $PYTHON_VERSION)"
+    if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'; then
+        error "Python 3.9+ required (found $PYTHON_VERSION)"
     fi
     info "Python $PYTHON_VERSION detected"
     
@@ -104,7 +104,6 @@ install_dependencies() {
         resolvconf \
         net-tools \
         dnsutils \
-        bc \
         > /dev/null 2>&1
     
     # Verify WireGuard installation
@@ -271,10 +270,11 @@ RestartSec=10
 # Security hardening
 NoNewPrivileges=yes
 PrivateTmp=yes
-PrivateDevices=yes
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=${CONFIG_DIR} /var/log/zkvpn
+ReadWritePaths=${CONFIG_DIR} /var/log/zkvpn /etc/resolv.conf /etc/resolvconf
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
@@ -296,15 +296,13 @@ EOF
 harden_system() {
     info "Applying basic system hardening..."
     
-    # Configure UFW firewall
-    if command -v ufw &> /dev/null; then
-        ufw --force disable > /dev/null 2>&1
-        ufw default deny incoming > /dev/null 2>&1
-        ufw default allow outgoing > /dev/null 2>&1
+    # Firewall: never reset or toggle the host firewall. Only open the
+    # WireGuard port if UFW is already active.
+    if command -v ufw &> /dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
         ufw allow 51820/udp comment 'ZK-VPN WireGuard' > /dev/null 2>&1
-        ufw allow ssh > /dev/null 2>&1
-        ufw --force enable > /dev/null 2>&1
-        info "Firewall configured"
+        info "Opened 51820/udp in existing UFW configuration"
+    else
+        warn "UFW inactive or missing: make sure 51820/udp is reachable"
     fi
     
     # Kernel parameters for WireGuard optimization
