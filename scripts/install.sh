@@ -154,7 +154,8 @@ get_code() {
             "https://github.com/${REPO}.git" \
             "${INSTALL_DIR}/tmp" || error "Failed to clone repository"
         
-        mv "${INSTALL_DIR}/tmp/zk-vpn-prototype/src" "${INSTALL_DIR}/src"
+        mv "${INSTALL_DIR}/tmp/src" "${INSTALL_DIR}/src"
+        cp "${INSTALL_DIR}/tmp/requirements.txt" "${INSTALL_DIR}/tmp/setup.py" "${INSTALL_DIR}/tmp/README.md" "${INSTALL_DIR}/"
         rm -rf "${INSTALL_DIR}/tmp"
     fi
     
@@ -176,8 +177,8 @@ setup_venv() {
     pip install --upgrade pip setuptools wheel > /dev/null 2>&1
     
     # Install dependencies
-    if [[ -f "${INSTALL_DIR}/src/requirements.txt" ]]; then
-        pip install -r "${INSTALL_DIR}/src/requirements.txt" > /dev/null 2>&1
+    if [[ -f "${INSTALL_DIR}/requirements.txt" ]]; then
+        pip install -r "${INSTALL_DIR}/requirements.txt" > /dev/null 2>&1
     else
         # Minimal dependencies
         pip install \
@@ -189,7 +190,7 @@ setup_venv() {
     fi
     
     # Install the package in development mode
-    cd "${INSTALL_DIR}/src"
+    cd "${INSTALL_DIR}"
     pip install -e . > /dev/null 2>&1
     
     deactivate
@@ -206,7 +207,7 @@ generate_config() {
     WG_PUBLIC_KEY=$(echo "$WG_PRIVATE_KEY" | wg pubkey)
     
     # Generate random node ID
-    NODE_ID="node-$(tr -dc a-f0-九 < /dev/urandom | head -c 16)"
+    NODE_ID="node-$(tr -dc a-f0-9 < /dev/urandom | head -c 16)"
     
     # Write configuration
     cat > "${CONFIG_DIR}/.env" << EOF
