@@ -103,6 +103,18 @@ class Settings(BaseSettings):
         True,
         description="Server masquerades tunnel clients and forwards their traffic (clients are isolated from each other)"
     )
+    dns_servers: str = Field(
+        "1.1.1.1,1.0.0.1",
+        description="Comma-separated DNS servers used inside the tunnel"
+    )
+    dns_backend: Literal["auto", "resolved", "resolvconf", "file"] = Field(
+        "auto",
+        description="How the resolver is configured (auto-detected: systemd-resolved, resolvconf, or resolv.conf)"
+    )
+    state_dir: str = Field(
+        "/run/zkvpn",
+        description="RAM-backed directory (tmpfs) holding what is needed to undo network changes across processes"
+    )
     dns_protection_enabled: bool = Field(
         True,
         description="Client rewrites /etc/resolv.conf and blocks DNS outside the tunnel"

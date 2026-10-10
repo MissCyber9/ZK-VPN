@@ -16,10 +16,14 @@ from dotenv import load_dotenv
 
 # Load environment variables
 env_file = Path("/etc/zkvpn/.env")
-if env_file.exists():
-    load_dotenv(env_file)
-else:
-    load_dotenv()  # Try local .env
+try:
+    if env_file.exists():
+        load_dotenv(env_file)
+    else:
+        load_dotenv()  # Try local .env
+except PermissionError:
+    # Root-only secrets file: under systemd the unit's EnvironmentFile already provides it
+    pass
 
 from zkvpn.cli.commands import (
     connect, disconnect, serve, status, identity, config,

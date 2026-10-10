@@ -23,7 +23,7 @@ jobs:
       - run: pip install -r requirements-dev.txt -e .
       - name: Build ZK circuit (dev setup, single party)
         run: scripts/setup_circuits.sh
-      - run: pytest -q
+      - run: pytest -q   # unit tests (e2e and slow ones have their own jobs)
       - name: Shell syntax
         run: bash -n scripts/install.sh scripts/setup_circuits.sh
 
@@ -45,3 +45,33 @@ jobs:
       - run: scripts/setup_circuits.sh
       - name: End-to-end tests in network namespaces
         run: sudo -E env "PATH=$PATH" python -m pytest -m e2e tests/e2e -v
+
+  distro:
+    # Installer + real systemd service + real client, per distribution (own network namespace
+    # in a privileged container, so the firewall rules never touch the runner).
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "debian:12", "fedora:41"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer, service and end-to-end on ${{ matrix.image }}
+        run: tests/distro/run.sh ${{ matrix.image }} --e2e
+
+  ceremony:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: pip install -r requirements-dev.txt -e .
+      - run: scripts/setup_circuits.sh
+      - name: Multi-party ceremony (3 contributors + beacon, tamper tests)
+        run: python -m pytest -m slow tests/test_ceremony.py -v
