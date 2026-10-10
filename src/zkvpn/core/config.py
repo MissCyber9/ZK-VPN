@@ -99,6 +99,14 @@ class Settings(BaseSettings):
         le=65535,
         description="TCP port of the ZK admission server"
     )
+    server_nat_enabled: bool = Field(
+        True,
+        description="Server masquerades tunnel clients and forwards their traffic (clients are isolated from each other)"
+    )
+    dns_protection_enabled: bool = Field(
+        True,
+        description="Client rewrites /etc/resolv.conf and blocks DNS outside the tunnel"
+    )
     killswitch_enabled: bool = Field(
         True,
         description="Block all non-tunnel traffic while connected as a client"

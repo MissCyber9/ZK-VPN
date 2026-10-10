@@ -87,16 +87,17 @@ async def connect(peer: Optional[str], endpoint: Optional[str],
                         print_info("Public key copied to clipboard!")
             else:
                 print_error("Failed to start server")
+                raise SystemExit(1)
                 
         else:
             # Client mode
             if not endpoint:
                 print_error("Endpoint required for client mode (--endpoint)")
-                return
+                raise SystemExit(2)
             
             if not pubkey:
                 print_error("Server public key required (--pubkey)")
-                return
+                raise SystemExit(2)
             
             print_info(f"Connecting to {endpoint}...")
             
@@ -116,14 +117,16 @@ async def connect(peer: Optional[str], endpoint: Optional[str],
                 console.print(f"[cyan]IP Address:[/cyan] {status['address']}")
                 console.print(f"[cyan]Kill-switch:[/cyan] {'on' if status['killswitch'] else 'off'}")
                 
-                # Enable DNS protection
-                await dns_protector.enable_protection()
-                print_success("DNS leak protection enabled")
+                if settings.dns_protection_enabled:
+                    await dns_protector.enable_protection()
+                    print_success("DNS leak protection enabled")
             else:
                 print_error("Connection failed")
+                raise SystemExit(1)
                 
     except Exception as e:
         print_error(f"Connection error: {e}")
+        raise SystemExit(1)
 
 
 @click.command()
@@ -150,8 +153,8 @@ async def disconnect():
     try:
         print_info("Disconnecting...")
         
-        # Disable DNS protection
-        await dns_protector.disable_protection()
+        if settings.dns_protection_enabled:
+            await dns_protector.disable_protection()
         
         # Disconnect tunnel
         success = await tunnel.disconnect()
