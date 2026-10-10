@@ -75,7 +75,8 @@ class ZKTunnel:
         """Start the VPN server (and its admission endpoint)."""
         try:
             if not self.interface.is_initialized:
-                await self.interface.configure_interface()
+                # the server keeps a stable identity: the configured key, if any
+                await self.interface.configure_interface(settings.get_private_key())
 
             await self.interface.set_address(self._cidr(self.config.server_ip))
             await self._enable_ip_forwarding()

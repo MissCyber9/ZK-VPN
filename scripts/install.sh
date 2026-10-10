@@ -200,6 +200,8 @@ RuntimeDirectoryMode=0700
 # wireguard-go (used when the kernel has no WireGuard) needs /dev/net/tun; the standard mode is
 # 0666, but some containers create it 0600. Fix it only when it is not already usable.
 ExecStartPre=-+/usr/bin/find /dev/net/tun -maxdepth 0 ! -perm -0666 -exec chmod 0666 {} +
+# wireguard-go keeps its control socket in /run/wireguard and must be able to create it
+ExecStartPre=+/usr/bin/install -d -o ${SERVICE_USER} -g ${SERVICE_USER} -m 0750 /run/wireguard
 
 # Network administration without root
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
