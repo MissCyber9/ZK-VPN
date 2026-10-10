@@ -17,7 +17,8 @@ NAME="zkvpn-test-${SAFE}"
 RELAY_PID=""
 
 cleanup() {
-    docker rm -f "$NAME" "${BASE}-c" >/dev/null 2>&1 || true
+    if [[ -n "${KEEP:-}" ]]; then echo ">>> KEEP set: container $NAME left running (docker exec -it $NAME bash)"
+    else docker rm -f "$NAME" "${BASE}-c" >/dev/null 2>&1 || true; fi
     [[ -n "$RELAY_PID" ]] && kill "$RELAY_PID" 2>/dev/null || true
 }
 trap cleanup EXIT

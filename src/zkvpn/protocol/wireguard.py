@@ -40,13 +40,21 @@ def validate_endpoint(endpoint: str) -> str:
 
 
 def _stderr_text(e) -> str:
-    """Readable one-line reason from a failed subprocess (wireguard-go prints a long banner)."""
-    err = e.stderr
-    if isinstance(err, bytes):
-        err = err.decode(errors="replace")
-    lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
+    """Readable one-line reason from a failed subprocess.
+
+    wireguard-go prints a long banner and reports its error on stdout, so both
+    streams are searched.
+    """
+    parts = []
+    for stream in (getattr(e, "stderr", None), getattr(e, "stdout", None)):
+        if isinstance(stream, bytes):
+            stream = stream.decode(errors="replace")
+        parts.append(stream or "")
+    lines = [ln.strip() for ln in "\n".join(parts).splitlines() if ln.strip()]
     errors = [ln for ln in lines if "ERROR" in ln or "rror:" in ln]
-    return (errors or lines or ["no output"])[-1]
+    boxes = set("┌┐└┘│─ ")
+    plain = [ln for ln in lines if not set(ln) <= boxes and not ln.startswith("│")]
+    return (errors or plain or lines or ["no output"])[-1]
 
 
 _UNITS = {"B": 1, "KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3, "TiB": 1024 ** 4}
