@@ -450,32 +450,35 @@ def config_show(secrets: bool):
 @click.argument('key')
 @click.argument('value')
 def config_set(key: str, value: str):
-    """Set configuration value."""
+    """Set a (non-secret) configuration value."""
+    from zkvpn.core.config import validate_setting
+
+    try:
+        var = validate_setting(key, value)
+    except ValueError as e:
+        print_error(str(e))
+        raise SystemExit(1)
+
     env_file = Path("/etc/zkvpn/.env")
-    
-    if not env_file.exists():
-        env_file.parent.mkdir(parents=True, exist_ok=True)
-        env_file.touch()
-    
-    # Read existing
-    content = env_file.read_text() if env_file.exists() else ""
-    lines = content.splitlines()
-    
-    # Update or add
-    found = False
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    lines = env_file.read_text().splitlines() if env_file.exists() else []
+
+    entry = f"{var}={value}"
     for i, line in enumerate(lines):
-        if line.startswith(f"ZKVPN_{key.upper()}="):
-            lines[i] = f"ZKVPN_{key.upper()}={value}"
-            found = True
+        if line.startswith(f"{var}="):
+            lines[i] = entry
             break
-    
-    if not found:
-        lines.append(f"ZKVPN_{key.upper()}={value}")
-    
-    # Write back
-    env_file.write_text("\n".join(lines))
-    
-    print_success(f"Configuration updated: {key}={value}")
+    else:
+        lines.append(entry)
+
+    # Atomic write, owner-only permissions (the file may hold secrets)
+    tmp = env_file.with_name(env_file.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(tmp, env_file)
+
+    print_success(f"Configuration updated: {var}")
     print_warning("Restart service to apply changes")
 
 

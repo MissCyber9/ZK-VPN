@@ -217,3 +217,20 @@ class TestSettings:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+class TestValidateSetting:
+    def test_accepts_valid_setting(self):
+        from zkvpn.core.config import validate_setting
+        assert validate_setting("MAX_SESSIONS", "5") == "ZKVPN_MAX_SESSIONS"
+
+    @pytest.mark.parametrize("key,value", [
+        ("nonexistent", "1"),                 # unknown key
+        ("private_key", "x"),                 # secrets stay out of the CLI
+        ("log_level", "INFO\nZKVPN_PORT=1"),  # env-var injection via newline
+        ("max_sessions", "9999"),             # out of range
+        ("port", "abc"),
+    ])
+    def test_rejects_bad_input(self, key, value):
+        from zkvpn.core.config import validate_setting
+        with pytest.raises(ValueError):
+            validate_setting(key, value)

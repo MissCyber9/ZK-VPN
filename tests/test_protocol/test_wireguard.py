@@ -4,7 +4,7 @@ import asyncio
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
-from zkvpn.protocol.wireguard import WireGuardInterface, WireGuardPeer, wg_interface
+from zkvpn.protocol.wireguard import WireGuardInterface, WireGuardPeer, wg_interface, parse_wg_show
 from zkvpn.protocol.tunnel import ZKTunnel, tunnel
 from zkvpn.protocol.dns import DNSProtector, dns_protector
 
@@ -156,7 +156,9 @@ class TestZKTunnel:
         
         tunnel = ZKTunnel()
         
-        result = await tunnel.connect("10.0.0.1:51820", PUB2)
+        with patch.object(tunnel.killswitch, 'enable', AsyncMock(return_value=True)) as ks:
+            result = await tunnel.connect("10.0.0.1:51820", PUB2)
+        ks.assert_awaited_once_with(["10.0.0.1:51820"])
         
         assert result is True
         assert tunnel._is_connected is True
@@ -305,3 +307,87 @@ async def test_memory_guard_covers_async_body():
     assert asyncio.iscoroutinefunction(boom)
     with pytest.raises(MemoryError):
         await boom()
+
+
+class TestWgShowParser:
+    OUTPUT = """interface: wg0
+  public key: PUBKEY
+  private key: (hidden)
+  listening port: 51820
+
+peer: PEER1
+  endpoint: [2001:db8::1]:51820
+  allowed ips: 10.0.0.2/32, fd00::2/128
+  latest handshake: 1 minute, 5 seconds ago
+  transfer: 92 B received, 1.50 KiB sent
+
+peer: PEER2
+  allowed ips: (none)
+"""
+
+    def test_parses_peer_fields_ipv6_and_units(self):
+        status = parse_wg_show(self.OUTPUT)
+        assert status["public_key"] == "PUBKEY"
+        assert status["listen_port"] == 51820
+        p1, p2 = status["peers"]
+        assert p1["endpoint"] == "[2001:db8::1]:51820"
+        assert p1["allowed_ips"] == ["10.0.0.2/32", "fd00::2/128"]
+        assert p1["latest_handshake"] == "1 minute, 5 seconds ago"
+        assert p1["transfer"] == {"rx": 92, "tx": 1536}
+        assert p2["allowed_ips"] == [] and p2["endpoint"] is None
+
+
+class TestKillSwitch:
+    def test_rules_allow_only_tunnel_loopback_and_server(self):
+        from zkvpn.protocol.killswitch import build_rules, CHAIN
+        rules = build_rules("zkvpn0", ["203.0.113.5:51820", "[2001:db8::1]:51820"])
+        v4 = [r for r in rules if r[0] == "iptables" and r[1:3] == ("-A", CHAIN)]
+        v6 = [r for r in rules if r[0] == "ip6tables" and r[1:3] == ("-A", CHAIN)]
+        assert ("iptables", "-A", CHAIN, "-o", "zkvpn0", "-j", "ACCEPT") in v4
+        assert any("203.0.113.5" in r for r in v4) and not any("2001:db8::1" in r for r in v4)
+        assert any("2001:db8::1" in r for r in v6) and not any("203.0.113.5" in r for r in v6)
+        assert v4[-1][-1] == "DROP" and v6[-1][-1] == "DROP"
+        # the OUTPUT jump is installed last, once the chain is complete
+        assert rules[-1][:4] == ("ip6tables", "-I", "OUTPUT", "1")
+
+    def test_hostname_endpoint_rejected(self):
+        from zkvpn.protocol.killswitch import build_rules
+        with pytest.raises(ValueError):
+            build_rules("zkvpn0", ["vpn.example.com:51820"])
+
+    async def test_enable_rolls_back_on_failure(self):
+        from zkvpn.protocol.killswitch import KillSwitch
+        ks = KillSwitch("zkvpn0")
+        calls = []
+
+        async def fake_run(cmd):
+            calls.append(cmd)
+            return 1 if cmd[:2] == ("iptables", "-A") and cmd[-1] == "DROP" else 0
+
+        ks._run = fake_run
+        assert await ks.enable(["203.0.113.5:51820"]) is False
+        assert ks.active is False
+        assert ("iptables", "-X", "ZKVPN_KILLSWITCH") in calls   # rolled back
+
+    async def test_enable_and_disable(self):
+        from zkvpn.protocol.killswitch import KillSwitch
+        ks = KillSwitch("zkvpn0")
+
+        async def ok(cmd):
+            return 0
+
+        ks._run = ok
+        assert await ks.enable(["203.0.113.5:51820"]) is True and ks.active
+        await ks.disable()
+        assert ks.active is False
+
+
+class TestRemoveClient:
+    async def test_remove_client_keeps_server_running(self):
+        tunnel = ZKTunnel()
+        tunnel._client_sessions[PUB3] = "sess"
+        with patch.object(WireGuardInterface, 'remove_peer', AsyncMock(return_value=True)), \
+             patch.object(WireGuardInterface, 'delete_interface', AsyncMock()) as delete:
+            assert await tunnel.remove_client(PUB3) is True
+        delete.assert_not_called()
+        assert PUB3 not in tunnel._client_sessions
