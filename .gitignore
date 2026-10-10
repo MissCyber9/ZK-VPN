@@ -42,3 +42,7 @@ logs/
 build/
 dist/
 *:Zone.Identifier
+
+# ZK toolchain and build output
+zk/node_modules/
+zk/build/

@@ -1,4 +1,7 @@
-"""Zero-knowledge verifier for ZK-VPN.
+"""SIMULATED — NOT CRYPTOGRAPHIC. Development stub only: its 'proofs' can be forged.
+Real proofs live in ``zkvpn.zk`` (Groth16, see scripts/setup_circuits.sh).
+
+Zero-knowledge verifier for ZK-VPN.
 
 Ultra-fast verification of ZK proofs with batch processing.
 All verification performed in memory, <50ms per proof.
