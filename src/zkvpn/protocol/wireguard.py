@@ -203,8 +203,10 @@ class WireGuardInterface:
         Returns:
             bool: True if successful
         """
-        # Use provided key, else the configured one (ZKVPN_PRIVATE_KEY), else generate
-        private_key = private_key or settings.get_private_key()
+        # Use the provided key, else generate a fresh one. The configured server key
+        # (ZKVPN_PRIVATE_KEY) is passed explicitly by the server only: a client on a
+        # machine that also holds a server config must never inherit that key (WireGuard
+        # silently ignores a peer that carries the interface's own public key).
         if private_key:
             self.private_key = private_key
             # Generate public key from private key

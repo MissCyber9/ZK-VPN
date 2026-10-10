@@ -487,3 +487,43 @@ class TestErrorMessages:
     def test_empty_stderr(self):
         from zkvpn.protocol.wireguard import _stderr_text
         assert _stderr_text(subprocess.CalledProcessError(1, "x", stderr=None)) == "no output"
+
+
+class TestKeyHandling:
+    """A client must never inherit the server's configured private key."""
+
+    async def test_client_generates_its_own_key_even_if_a_server_key_is_configured(self, monkeypatch):
+        from pydantic import SecretStr
+        from zkvpn.core.config import settings
+        monkeypatch.setattr(settings, "private_key", SecretStr("SERVERKEY" + "A" * 35))
+        wg = WireGuardInterface("test0")
+        generated = []
+
+        def fake_keypair():
+            generated.append(True)
+            wg.private_key, wg.public_key = "fresh-priv", "fresh-pub"
+            return "fresh-priv", "fresh-pub"
+
+        with patch.object(wg, "generate_keypair", side_effect=fake_keypair), \
+             patch("subprocess.run") as run, \
+             patch("asyncio.create_subprocess_exec") as proc:
+            run.return_value.returncode = 0
+            proc.return_value.communicate = AsyncMock(return_value=(b"", b""))
+            proc.return_value.returncode = 0
+            await wg.configure_interface()
+        assert generated and wg.private_key == "fresh-priv"
+
+    async def test_server_uses_the_configured_key(self, monkeypatch):
+        from pydantic import SecretStr
+        key = "S" * 43 + "="
+        from zkvpn.core.config import settings
+        monkeypatch.setattr(settings, "private_key", SecretStr(key))
+        tunnel = ZKTunnel(WireGuardInterface("test0"))      # not the shared global interface
+        with patch.object(WireGuardInterface, "configure_interface", AsyncMock(return_value=True)) as cfg, \
+             patch.object(WireGuardInterface, "set_address", AsyncMock(return_value=True)), \
+             patch.object(tunnel, "_enable_ip_forwarding", AsyncMock()), \
+             patch.object(tunnel.nat, "enable", AsyncMock(return_value=True)), \
+             patch("zkvpn.protocol.tunnel.AdmissionServer.start", AsyncMock()):
+            assert await tunnel.start_server() is True
+        cfg.assert_awaited_once_with(key)
+        tunnel._health_check_task.cancel()
