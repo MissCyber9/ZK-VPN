@@ -3,7 +3,7 @@
 All commands are organized by functionality:
 - connect/disconnect: Tunnel management
 - status: System status
-- proofs: ZK proof management
+- identity: ZK identity management
 - config: Configuration
 - test: Diagnostics
 - peer: Peer management
@@ -25,9 +25,9 @@ from rich.table import Table
 from rich import box
 
 from zkvpn.core.config import settings, get_settings
-from zkvpn.core.memory import proof_store, session_manager, key_store
-from zkvpn.circuits.prover import prover, Proof
-from zkvpn.circuits.verifier import verifier
+from zkvpn.core.memory import session_manager, key_store
+from zkvpn.zk import (SessionProver, SessionVerifier, generate_identity, load_identity,
+                      public_identity, save_identity)
 from zkvpn.protocol.tunnel import tunnel, TunnelConfig
 from zkvpn.protocol.wireguard import wg_interface, WireGuardPeer
 from zkvpn.protocol.dns import dns_protector
@@ -47,8 +47,11 @@ from zkvpn.cli.utils import (
 @click.option('--endpoint', '-e', help='Server endpoint (ip:port)')
 @click.option('--pubkey', '-k', help="Server's public key")
 @click.option('--config', '-c', help='Config file path')
+@click.option('--identity', '-i', 'identity_file', type=click.Path(exists=True, dir_okay=False),
+              help='ZK identity file (see `zkvpn identity new`); required by servers enforcing proofs')
 async def connect(peer: Optional[str], endpoint: Optional[str], 
-                  pubkey: Optional[str], config: Optional[str]):
+                  pubkey: Optional[str], config: Optional[str],
+                  identity_file: Optional[str]):
     """Connect to a VPN peer or start server.
     
     If no arguments provided, starts in server mode.
@@ -59,11 +62,10 @@ async def connect(peer: Optional[str], endpoint: Optional[str],
             # Server mode
             print_info("Starting ZK-VPN server...")
             
-            async with run_with_spinner(
+            success = await run_with_spinner(
                 tunnel.start_server(),
                 "Initializing WireGuard interface..."
-            ):
-                success = await tunnel.start_server()
+            )
             
             if success:
                 # Generate QR code for easy client config
@@ -98,7 +100,12 @@ async def connect(peer: Optional[str], endpoint: Optional[str],
             
             print_info(f"Connecting to {endpoint}...")
             
-            success = await tunnel.connect(endpoint, pubkey)
+            sk = load_identity(identity_file) if identity_file else None
+            if sk is None:
+                print_warning("No --identity: only works with servers that do not require ZK proofs")
+            else:
+                print_info("Proving identity to the server (Groth16)...")
+            success = await tunnel.connect(endpoint, pubkey, identity_sk=sk)
             
             if success:
                 print_success(f"Connected to {endpoint}")
@@ -107,7 +114,7 @@ async def connect(peer: Optional[str], endpoint: Optional[str],
                 status = tunnel.get_status()
                 console.print(f"[cyan]Interface:[/cyan] {status['interface']}")
                 console.print(f"[cyan]IP Address:[/cyan] {status['address']}")
-                console.print(f"[cyan]Proof:[/cyan] {status['last_proof'][:16]}...")
+                console.print(f"[cyan]Kill-switch:[/cyan] {'on' if status['killswitch'] else 'off'}")
                 
                 # Enable DNS protection
                 await dns_protector.enable_protection()
@@ -117,6 +124,24 @@ async def connect(peer: Optional[str], endpoint: Optional[str],
                 
     except Exception as e:
         print_error(f"Connection error: {e}")
+
+
+@click.command()
+async def serve():
+    """Run the VPN server in the foreground until SIGTERM/SIGINT (systemd entry point)."""
+    import signal
+
+    if not await tunnel.start_server():
+        print_error("Failed to start server")
+        raise SystemExit(1)
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+    print_info("ZK-VPN server running (Ctrl+C to stop)")
+    await stop.wait()
+    await tunnel.disconnect()
 
 
 @click.command()
@@ -156,11 +181,6 @@ async def status(watch: bool, json_output: bool):
             "dns": {
                 "protected": dns_protector.is_protected,
                 "servers": await dns_protector._get_current_dns_servers()
-            },
-            "zk": {
-                "proofs_generated": prover.get_stats()["proofs_generated"],
-                "verifications": verifier.get_stats()["verifications"],
-                "cached_proofs": len(prover._proof_cache)
             }
         }
         print_json(status_data)
@@ -213,24 +233,12 @@ async def _show_status():
         for peer in wg_status['peers']:
             peer_table.add_row(
                 peer['public_key'][:16] + "...",
-                peer.get('endpoint', '-'),
-                peer.get('latest handshake', '-'),
+                peer.get('endpoint') or '-',
+                peer.get('latest_handshake') or '-',
                 f"↓{format_bytes(peer['transfer']['rx'])} ↑{format_bytes(peer['transfer']['tx'])}"
             )
         
         console.print(peer_table)
-    
-    # ZK Proof status
-    console.print("\n[bold cyan]🔐 Zero-Knowledge Proofs[/bold cyan]")
-    
-    last_proof = tunnel._last_proof
-    if last_proof:
-        age_color = StatusColors.health_color(last_proof.age_seconds)
-        console.print(
-            f"  Last Proof: {last_proof.proof_hash[:16]}... "
-            f"[{age_color}]({format_duration(last_proof.age_seconds)} old)[/{age_color}]"
-        )
-        console.print(f"  Valid: [green]✓[/green]" if last_proof.public_inputs.get('is_valid') else "[red]✗[/red]")
     
     # DNS status
     console.print("\n[bold cyan]🌐 DNS Protection[/bold cyan]")
@@ -240,18 +248,6 @@ async def _show_status():
         console.print(f"  DNS Servers: {', '.join(dns_servers)}")
     else:
         console.print("  Status: [red]Not Protected[/red]")
-    
-    # Performance stats
-    console.print("\n[bold cyan]📊 Performance[/bold cyan]")
-    prover_stats = prover.get_stats()
-    verifier_stats = verifier.get_stats()
-    
-    console.print(f"  Proofs Generated: {prover_stats['proofs_generated']}")
-    console.print(f"  Avg Generation: {prover_stats['avg_generation_time']*1000:.1f}ms")
-    console.print(f"  Verifications: {verifier_stats['verifications']}")
-    console.print(f"  Avg Verification: {verifier_stats['avg_verification_time_ms']:.2f}ms")
-    console.print(f"  Cache Hits: {verifier_stats['cached_verifications']}")
-    console.print(f"  Success Rate: {verifier_stats['success_rate']*100:.1f}%")
 
 
 async def _watch_status():
@@ -295,16 +291,6 @@ async def _watch_status():
                     f"Port: {wg_status.get('listen_port', '-')}"
                 )
             
-            # ZK Proofs
-            if tunnel._last_proof:
-                age = tunnel._last_proof.age_seconds
-                age_color = StatusColors.health_color(age)
-                status_table.add_row(
-                    "ZK Proof",
-                    f"[{age_color[5:]}]{format_duration(age)} old[/{age_color[5:]}]",
-                    f"Hash: {tunnel._last_proof.proof_hash[:16]}..."
-                )
-            
             # DNS
             status_table.add_row(
                 "DNS",
@@ -328,99 +314,37 @@ async def _watch_status():
 
 
 # ============================================================================
-# PROOF COMMANDS
+# IDENTITY COMMANDS
 # ============================================================================
 
 @click.group()
-def proofs():
-    """Manage zero-knowledge proofs."""
+def identity():
+    """Manage your zero-knowledge identity."""
     pass
 
 
-@proofs.command(name="list")
-async def proofs_list():
-    """List recent proofs."""
-    stats = prover.get_stats()
-    proofs_list = list(prover._proof_cache.values())[-10:]  # Last 10
-    
-    if not proofs_list:
-        print_info("No proofs in cache")
-        return
-    
-    table = Table(title=f"Recent Proofs ({len(proofs_list)} in cache)")
-    table.add_column("Hash", style="cyan")
-    table.add_column("Age", justify="right")
-    table.add_column("Valid", justify="center")
-    table.add_column("Size", justify="right")
-    
-    for proof in reversed(proofs_list):
-        age_color = StatusColors.health_color(proof.age_seconds)
-        table.add_row(
-            proof.proof_hash[:16] + "...",
-            f"[{age_color[5:]}]{format_duration(proof.age_seconds)}[/{age_color[5:]}]",
-            "✓" if proof.public_inputs.get('is_valid') else "✗",
-            format_bytes(proof.size_bytes)
-        )
-    
-    console.print(table)
-    
-    # Summary
-    console.print(f"\n[cyan]Total Generated:[/cyan] {stats['proofs_generated']}")
-    console.print(f"[cyan]Avg Generation:[/cyan] {stats['avg_generation_time']*1000:.1f}ms")
-    console.print(f"[cyan]Avg Size:[/cyan] {format_bytes(stats['avg_proof_size_bytes'])}")
+@identity.command(name="new")
+@click.argument('path', type=click.Path(dir_okay=False))
+async def identity_new(path: str):
+    """Create a new secret identity at PATH (mode 0600, never overwritten).
+
+    Prints the public identity: give it to the server operator, who lists it in
+    ZKVPN_AUTHORIZED_IDENTITIES. Back the file up: it cannot be recovered.
+    """
+    try:
+        sk = save_identity(path)
+    except FileExistsError:
+        print_error(f"{path} already exists; refusing to overwrite an identity")
+        raise SystemExit(1)
+    print_success(f"Identity saved to {path} (keep it secret)")
+    console.print(f"Public identity: [cyan]{await public_identity(sk)}[/cyan]")
 
 
-@proofs.command(name="verify")
-@click.argument('proof_hash', required=False)
-async def proofs_verify(proof_hash: Optional[str]):
-    """Verify a specific proof."""
-    if not proof_hash:
-        # Verify last proof
-        proof = tunnel._last_proof
-        if not proof:
-            print_error("No proof available")
-            return
-    else:
-        # Find proof by hash prefix
-        proof = None
-        for p in prover._proof_cache.values():
-            if p.proof_hash.startswith(proof_hash):
-                proof = p
-                break
-        
-        if not proof:
-            print_error(f"Proof not found: {proof_hash}")
-            return
-    
-    print_info(f"Verifying proof {proof.proof_hash[:16]}...")
-    
-    result = await verifier.verify(proof, use_cache=False)
-    
-    if result.valid:
-        print_success(f"Proof is valid (verified in {result.verification_time_ms:.2f}ms)")
-    else:
-        print_error(f"Proof is invalid: {result.error}")
-
-
-@proofs.command(name="generate")
-async def proofs_generate():
-    """Generate a new proof."""
-    print_info("Generating new proof...")
-    
-    proof = await prover.generate_proof()
-    
-    print_success(f"Proof generated in {prover.get_stats()['avg_generation_time']*1000:.1f}ms")
-    console.print(f"  Hash: {proof.proof_hash}")
-    console.print(f"  Size: {format_bytes(proof.size_bytes)}")
-    console.print(f"  Valid: {'✓' if proof.public_inputs.get('is_valid') else '✗'}")
-
-
-@proofs.command(name="clear")
-async def proofs_clear():
-    """Clear proof cache."""
-    await prover.clear_cache()
-    await verifier.clear_cache()
-    print_success("Proof cache cleared")
+@identity.command(name="show")
+@click.argument('path', type=click.Path(exists=True, dir_okay=False))
+async def identity_show(path: str):
+    """Print the public identity for the secret identity file PATH."""
+    console.print(await public_identity(load_identity(path)))
 
 
 # ============================================================================
@@ -588,8 +512,8 @@ async def peer_list():
     for peer in status['peers']:
         table.add_row(
             peer['public_key'][:16] + "...",
-            peer.get('endpoint', '-'),
-            peer.get('latest handshake', '-'),
+            peer.get('endpoint') or '-',
+            peer.get('latest_handshake') or '-',
             f"↓{format_bytes(peer['transfer']['rx'])} ↑{format_bytes(peer['transfer']['tx'])}",
             ", ".join(peer.get('allowed_ips', []))
         )
@@ -685,29 +609,32 @@ async def test_speed(duration: int):
 
 @test.command(name="zk")
 async def test_zk():
-    """Test ZK proof system."""
+    """Round-trip a real Groth16 session proof (prove + verify)."""
     print_info("Testing ZK proof system...")
-    
-    # Generate proof
-    start = asyncio.get_event_loop().time()
-    proof = await prover.generate_proof(deterministic=True)
-    gen_time = (asyncio.get_event_loop().time() - start) * 1000
-    
-    # Verify proof
-    start = asyncio.get_event_loop().time()
-    result = await verifier.verify(proof, use_cache=False)
-    verify_time = (asyncio.get_event_loop().time() - start) * 1000
-    
+    prover_, verifier_ = SessionProver(), SessionVerifier()
+    if not prover_.backend.available:
+        print_error("ZK artifacts missing: run scripts/setup_circuits.sh")
+        return
+
+    wg_key = "A" * 43 + "="
+    nonce = verifier_.issue_challenge()
+
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    proof = await prover_.prove(generate_identity(), nonce, wg_key)
+    gen_ms = (loop.time() - start) * 1000
+    start = loop.time()
+    result = await verifier_.verify(proof, nonce, wg_key)
+    verify_ms = (loop.time() - start) * 1000
+
     console.print("\n[bold cyan]🔐 ZK System Test[/bold cyan]")
-    console.print(f"\n  Generation: {gen_time:.1f}ms [green]✓[/green]" if gen_time < 500 else "[red]✗[/red]")
-    console.print(f"  Verification: {verify_time:.2f}ms [green]✓[/green]" if verify_time < 50 else "[red]✗[/red]")
-    console.print(f"  Proof Size: {format_bytes(proof.size_bytes)} [green]✓[/green]" if proof.size_bytes < 1024 else "[red]✗[/red]")
+    console.print(f"  Generation: {gen_ms:.0f}ms")
+    console.print(f"  Verification: {verify_ms:.0f}ms")
     console.print(f"  Valid: {'✓' if result.valid else '✗'}")
-    
     if result.valid:
         print_success("ZK system is functioning correctly")
     else:
-        print_error("ZK system test failed")
+        print_error(f"ZK system test failed: {result.error}")
 
 
 @test.command(name="all")

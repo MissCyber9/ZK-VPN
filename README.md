@@ -3,31 +3,40 @@
 Prototype de VPN WireGuard piloté en Python, avec une couche de « preuves » destinée
 à devenir un jour de vraies preuves zero-knowledge.
 
-> ⚠️ **Statut : maquette, non utilisable en production.**
-> L'**admission des clients** utilise de vraies preuves Groth16 (`zkvpn.zk`), mais la
+> ⚠️ **Statut : maquette, non auditée, non utilisable en production.**
+> L'**admission des clients** repose sur de vraies preuves Groth16 (`zkvpn.zk`), mais la
 > cérémonie de setup est locale et mono-partie (développement uniquement).
-> Les modules `zkvpn.circuits.*` (prover/verifier/no_logging) sont des **stubs simulés**
-> qui peuvent être forgés. Ce projet **ne prouve pas** l'absence de logs : aucune preuve ZK
-> ne le peut. Voir [AUDIT.md](AUDIT.md).
+> Ce projet **ne prouve pas** l'absence de logs : aucune preuve ZK ne le peut. Voir [AUDIT.md](AUDIT.md).
 
 ## Ce qui existe
-- Gestion d'une interface WireGuard via `wg` / `ip` (`src/zkvpn/protocol/wireguard.py`, `tunnel.py`)
-- Protection DNS basique via `iptables` / `resolv.conf` (`protocol/dns.py`)
-- Stockage en mémoire avec TTL pour sessions, preuves et clés (`core/memory.py`)
-- Configuration par variables d'environnement `ZKVPN_*` (`core/config.py`)
-- CLI `zkvpn` (click / rich)
+- Gestion d'une interface WireGuard via `wg` / `ip` (`protocol/wireguard.py`, `tunnel.py`)
 - **Authentification ZK de session** (Groth16, circom + snarkjs) : le client prouve qu'il
   connaît la clé secrète de son identité, pour un challenge du serveur **lié à sa clé
-  WireGuard**, avec horodatage frais et chaînage anti-rejeu (`zk/`, `src/zkvpn/zk/`,
-  `circuits/session_auth.circom`). Le serveur refuse les clients sans preuve valide
-  (`ZKVPN_REQUIRE_CLIENT_PROOF`, `ZKVPN_AUTHORIZED_IDENTITIES`).
+  WireGuard**, avec horodatage frais (`circuits/session_auth.circom`, `src/zkvpn/zk/`)
+- **Protocole d'admission** TCP (`protocol/admission.py`) : hello → challenge → preuve → IP attribuée.
+  Le serveur refuse les clients sans preuve valide (`ZKVPN_REQUIRE_CLIENT_PROOF`,
+  `ZKVPN_AUTHORIZED_IDENTITIES`, `ZKVPN_ADMISSION_PORT`)
 - **Kill-switch** iptables/ip6tables (bloque tout hors tunnel, DoT/DoH inclus), activé à la connexion client
-- Stubs de preuve « no-logging » **simulés** (`circuits/prover.py`, `verifier.py`, `no_logging.py`)
+- Protection DNS basique (`protocol/dns.py`)
+- Stockage en mémoire avec TTL (`core/memory.py`), configuration `ZKVPN_*` (`core/config.py`)
+- CLI `zkvpn` : `serve`, `connect`, `disconnect`, `status`, `identity`, `config`, `peer`, `test`
 
 ## Ce qui n'existe pas (encore)
-- Transport réseau des preuves entre pairs (l'API `issue_challenge` / `add_client(proof=...)` existe, pas le protocole)
 - Cérémonie de confiance multipartite pour les clés de preuve
+- Chiffrement/authentification du canal d'admission (il ne transporte que des données publiques ;
+  le serveur est authentifié par sa clé WireGuard, à épingler hors bande)
 - Réseau P2P, système de réputation, interface web
+- Tests sur machine réelle du kill-switch et du service systemd
+
+## Utilisation
+```bash
+# Serveur (root) : écoute WireGuard + admission, liste blanche optionnelle
+ZKVPN_AUTHORIZED_IDENTITIES=<pk1>,<pk2> zkvpn serve
+
+# Client : créer une identité, donner la clé publique affichée à l'opérateur, se connecter
+zkvpn identity new ~/.zkvpn-identity          # fichier 0600, jamais écrasé
+zkvpn connect -e <ip>:51820 -k <clé WireGuard du serveur> -i ~/.zkvpn-identity
+```
 
 ## Installation (développement)
 ```bash
@@ -41,4 +50,4 @@ L'installeur système (`scripts/install.sh`, Ubuntu/Debian, root) est expérimen
 lisez-le avant de l'exécuter.
 
 ## Licence
-Aucune licence n'est encore définie.
+[MIT](LICENSE)

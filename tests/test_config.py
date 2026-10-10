@@ -205,14 +205,6 @@ class TestSettings:
         # Invalid port
         with pytest.raises(ValidationError):
             Settings(metrics_enabled=True, metrics_port=80)  # Privileged port
-    
-    def test_circuit_path_handling(self):
-        """Test ZK circuit path configuration."""
-        settings = Settings(circuit_path="/opt/zkvpn/circuits")
-        assert settings.circuit_path == "/opt/zkvpn/circuits"
-        
-        settings = Settings(circuit_path="./custom_circuits")
-        assert settings.circuit_path == "./custom_circuits"
 
 
 if __name__ == "__main__":

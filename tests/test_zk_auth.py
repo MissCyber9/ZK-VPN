@@ -115,7 +115,7 @@ async def test_authorized_identity_and_proof_chain(env):
     r1 = await first_nonce_verifier.verify(p1, n1, WG)
     assert r1.valid
     # An authorized-list verifier built from the observed identity accepts it.
-    verifier = SessionVerifier(backend, authorized=[r1.pk], clock=clock)
+    verifier = SessionVerifier(backend, authorized=[r1.pk], enforce_chain=True, clock=clock)
     n2 = verifier.issue_challenge()
     assert (await verifier.verify(await prover.prove(sk, n2, WG), n2, WG)).valid
     # Next proof must extend the chain with the previous tag.
@@ -144,3 +144,10 @@ async def test_tunnel_admits_client_with_real_proof():
         add_peer.assert_not_called()
         assert await tunnel.add_client(WG, nonce=nonce, proof=proof) is True
         add_peer.assert_called_once()
+
+
+async def test_chain_not_enforced_by_default_so_clients_can_reconnect(env):
+    clock, prover, verifier, sk = env
+    for _ in range(2):                      # same identity twice, prev_tag=0 both times
+        nonce = verifier.issue_challenge()
+        assert (await verifier.verify(await prover.prove(sk, nonce, WG), nonce, WG)).valid

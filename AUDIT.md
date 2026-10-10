@@ -52,13 +52,26 @@ Audit par lecture du code (tests non exécutés : pytest absent de l'environneme
 - `install.sh` : comparaison de version Python sans `bc`, UFW n'est plus désactivé/réinitialisé, unité systemd avec `CAP_NET_ADMIN`/`CAP_NET_RAW` (non testée sous systemd).
 - README réécrit : statut maquette, pas de promesse « no logging ».
 
-## Reste à faire
-1. **Vrai SNARK : fait pour l'admission des clients** (`circuits/session_auth.circom`, `src/zkvpn/zk/`, `scripts/setup_circuits.sh`). Le circuit prouve la connaissance de la clé secrète d'une identité pour un challenge lié à la clé WireGuard, avec fraîcheur et chaînage ; il ne prouve **pas** l'absence de logs. Limites restantes :
-   - cérémonie de setup mono-partie (développement) : à remplacer par une cérémonie multipartite pour la production ;
-   - pas de transport réseau des preuves entre pairs (l'API `issue_challenge` / `add_client(proof=...)` existe) ;
-   - `ZKTunnel.connect()` et les preuves périodiques utilisent encore les stubs simulés de `circuits/` (marqués comme tels).
-2. **Kill-switch : fait** (`protocol/killswitch.py`, chaîne `ZKVPN_KILLSWITCH` IPv4+IPv6, bloque aussi DoT/DoH, activé par `connect()` et en échec fermé). Non testé sur un vrai pare-feu dans cet environnement : seuls la construction des règles et le rollback sont testés. `remove_client()` retire un pair sans démonter le serveur.
-3. **`wireguard.py` : fait** — appels `subprocess` déplacés hors de la boucle (`asyncio.to_thread`), parseur de `wg show` réécrit (les champs des pairs étaient indentés de 2 espaces, pas 4, donc jamais lus ; IPv6 et unité `B` gérés).
-4. **`config set` : fait** — clé connue, valeur validée par le modèle, secrets refusés, injection par retour à la ligne refusée, écriture atomique en 0600, valeur plus affichée.
-5. **Pydantic v2 (`field_validator`) et CI GitHub Actions : faits.**
-6. **Restent ouverts** : licence (choix du propriétaire), `ZKTunnel.connect()` à brancher sur le vrai prover côté client, transport des preuves, test du kill-switch et de l'unité systemd sur une vraie machine.
+## État final des points de l'audit
+| Point | État |
+|---|---|
+| Vrai SNARK | **Fait** : `circuits/session_auth.circom` (Groth16/bn128, Poseidon), `src/zkvpn/zk/`. Prouve la connaissance de la clé secrète d'une identité, pour un challenge lié à la clé WireGuard, avec fraîcheur. Ne prouve **pas** l'absence de logs. |
+| Transport des preuves | **Fait** : `protocol/admission.py` (TCP, JSON par lignes, challenge à usage unique, limites de taille/temps/concurrence, réponse d'échec générique). |
+| `connect()` sur le vrai prover | **Fait** : `connect(..., identity_sk=...)` s'authentifie auprès du serveur qui attribue l'IP ; échec fermé si refusé. |
+| Stubs simulés | **Supprimés** (`circuits/prover|verifier|no_logging|compiler` et leurs tests) : plus aucun vérificateur falsifiable dans le paquet. |
+| Kill-switch | **Fait** (`protocol/killswitch.py`), activé par `connect()`, échec fermé. |
+| `wireguard.py` | **Fait** : non bloquant, parseur `wg show` corrigé, clé configurée réellement utilisée. |
+| `config set` | **Fait**. |
+| Pydantic v2, CI, licence MIT | **Faits**. |
+
+**Bugs supplémentaires trouvés et corrigés en testant le vrai CLI** : `zkvpn --help` et `zkvpn status` plantaient (commandes enregistrées comme fonctions), les sous-commandes `async` des groupes n'étaient jamais attendues, `connect` démarrait le serveur deux fois, `test zk` appelait un argument inexistant, le service systemd lançait une commande `node` qui n'existe pas (remplacée par `zkvpn serve`), et la clé privée générée par l'installeur n'était pas celle utilisée par le serveur.
+
+**Décision de conception** : le chaînage `prev_tag` n'est plus imposé par défaut (`enforce_chain=False`). Il rendait toute reconnexion impossible (le client ne conserve pas le dernier tag, le serveur perd son état au redémarrage) alors que le rejeu est déjà empêché par les challenges à usage unique liés à la clé WireGuard.
+
+## Limites connues (non résolues)
+1. **Cérémonie de confiance mono-partie** : quiconque a gardé l'entropie du setup local peut forger des preuves. Production : cérémonie multipartite (phase 1 publique + phase 2 dédiée).
+2. **Aucun test sur machine réelle** du kill-switch (iptables), de l'unité systemd, de `install.sh` de bout en bout : seuls la construction des règles, le rollback, la syntaxe shell et le protocole d'admission (TCP réel, preuves réelles) sont testés.
+3. **Canal d'admission en clair** : il ne transporte que des données publiques, mais un attaquant réseau peut bloquer ou ralentir l'admission (déni de service), et la vérification de preuve coûte du CPU (borné par un sémaphore de 8).
+4. **Liste blanche vide = toute identité valide est admise** (inscription ouverte, sybil possible). Renseigner `ZKVPN_AUTHORIZED_IDENTITIES` en production.
+5. **Identité** : le fichier secret n'est pas chiffré (protégé seulement par les permissions 0600).
+6. Pas d'audit externe : ne pas utiliser pour protéger des utilisateurs réels.

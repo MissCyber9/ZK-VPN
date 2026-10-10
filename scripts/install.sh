@@ -73,6 +73,14 @@ check_requirements() {
     fi
     info "Python $PYTHON_VERSION detected"
     
+    # Node.js (builds the ZK circuit and generates/verifies proofs)
+    if command -v node &> /dev/null; then
+        NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
+        if [[ "$NODE_MAJOR" -lt 18 ]]; then
+            error "Node.js 18+ required (found $(node -v)). See https://github.com/nodesource/distributions"
+        fi
+    fi
+    
     # Check memory (minimum 256MB)
     TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}')
     if [[ $TOTAL_MEM -lt 256 ]]; then
@@ -97,6 +105,8 @@ install_dependencies() {
         python3 \
         python3-pip \
         python3-venv \
+        nodejs \
+        npm \
         curl \
         wget \
         git \
@@ -142,20 +152,15 @@ create_directories() {
 get_code() {
     info "Fetching ZK-VPN code..."
     
-    if [[ -d "${INSTALL_DIR}/src" ]]; then
+    if [[ -d "${INSTALL_DIR}/.git" ]]; then
         warn "Existing installation found. Updating..."
-        cd "$INSTALL_DIR"
-        git pull origin "$BRANCH" || {
+        git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH" || {
             warn "Git pull failed, continuing with existing code"
         }
     else
         git clone --depth 1 --branch "$BRANCH" \
             "https://github.com/${REPO}.git" \
-            "${INSTALL_DIR}/tmp" || error "Failed to clone repository"
-        
-        mv "${INSTALL_DIR}/tmp/src" "${INSTALL_DIR}/src"
-        cp "${INSTALL_DIR}/tmp/requirements.txt" "${INSTALL_DIR}/tmp/setup.py" "${INSTALL_DIR}/tmp/README.md" "${INSTALL_DIR}/"
-        rm -rf "${INSTALL_DIR}/tmp"
+            "$INSTALL_DIR" || error "Failed to clone repository"
     fi
     
     if [[ ! -d "${INSTALL_DIR}/src" ]]; then
@@ -163,6 +168,15 @@ get_code() {
     fi
     
     success "Code fetched successfully"
+}
+
+# Build the Groth16 circuit and keys (single-party DEV setup, see setup_circuits.sh)
+build_circuits() {
+    info "Building ZK circuit (this takes about a minute)..."
+    "${INSTALL_DIR}/scripts/setup_circuits.sh" > /dev/null 2>&1 \
+        || error "ZK circuit build failed (run ${INSTALL_DIR}/scripts/setup_circuits.sh to see why)"
+    warn "ZK keys come from a single-party development setup; do not rely on them in production"
+    success "ZK circuit built"
 }
 
 # Setup Python virtual environment
@@ -217,6 +231,7 @@ generate_config() {
 # Node configuration
 ZKVPN_NODE_ID=${NODE_ID}
 ZKVPN_PORT=51820
+ZKVPN_ADMISSION_PORT=51821
 ZKVPN_HOST=0.0.0.0
 
 # Security
@@ -228,6 +243,10 @@ ZKVPN_MAX_SESSIONS=10
 # WireGuard
 ZKVPN_WIREGUARD_INTERFACE=zkvpn0
 ZKVPN_NETWORK_CIDR=10.0.0.0/24
+ZKVPN_ZK_DIR=${INSTALL_DIR}/zk
+ZKVPN_REQUIRE_CLIENT_PROOF=true
+# Comma-separated client identities allowed to connect (empty = any valid identity):
+ZKVPN_AUTHORIZED_IDENTITIES=
 ZKVPN_PRIVATE_KEY=${WG_PRIVATE_KEY}
 
 # Performance
@@ -263,7 +282,6 @@ Group=nogroup
 EnvironmentFile=${CONFIG_DIR}/.env
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${VENV_DIR}/bin/zkvpn-node
-ExecReload=/bin/kill -HUP \$MAINPID
 Restart=always
 RestartSec=10
 
@@ -300,6 +318,7 @@ harden_system() {
     # WireGuard port if UFW is already active.
     if command -v ufw &> /dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
         ufw allow 51820/udp comment 'ZK-VPN WireGuard' > /dev/null 2>&1
+        ufw allow 51821/tcp comment 'ZK-VPN admission' > /dev/null 2>&1
         info "Opened 51820/udp in existing UFW configuration"
     else
         warn "UFW inactive or missing: make sure 51820/udp is reachable"
@@ -326,21 +345,13 @@ EOF
 create_symlink() {
     info "Creating CLI symlink..."
     
-    cat > /usr/local/bin/zkvpn << EOF
-#!/bin/bash
-source ${VENV_DIR}/bin/activate
-python3 -m zkvpn.cli.main "\$@"
-deactivate
-EOF
+    ln -sf "${VENV_DIR}/bin/zkvpn" /usr/local/bin/zkvpn
     
-    chmod +x /usr/local/bin/zkvpn
-    
-    # Create node service wrapper
-    cat > /usr/local/bin/zkvpn-node << EOF
+    # Service entry point: foreground server, stops cleanly on SIGTERM
+    cat > /usr/local/bin/zkvpn-node << WRAPPER
 #!/bin/bash
-source ${VENV_DIR}/bin/activate
-python3 -m zkvpn.cli.main node --config ${CONFIG_DIR}/.env
-EOF
+exec ${VENV_DIR}/bin/zkvpn serve
+WRAPPER
     
     chmod +x /usr/local/bin/zkvpn-node
     
@@ -379,6 +390,7 @@ main() {
     create_directories
     get_code
     setup_venv
+    build_circuits
     generate_config
     setup_systemd
     harden_system
