@@ -51,8 +51,30 @@ pytest                      # tests unitaires ; les tests ZK sont ignorés si le
 sudo -E env "PATH=$PATH" pytest -m e2e tests/e2e
 ```
 
-L'installeur système (`scripts/install.sh`, Ubuntu/Debian, root) est expérimental :
-lisez-le avant de l'exécuter.
+## Installation serveur (Linux + systemd)
+```bash
+sudo ./scripts/install.sh          # ou : curl -sSL .../scripts/install.sh | sudo bash
+sudo systemctl enable --now zkvpn
+```
+Familles prises en charge (détectées via `/etc/os-release`) : **Debian/Ubuntu** (apt) et
+**Fedora/RHEL/Rocky/Alma** (dnf). Sur une autre distribution l'installeur s'arrête et liste ce qu'il
+faut installer à la main (WireGuard, iproute2, iptables, Python ≥ 3.9, Node ≥ 18). Le service tourne
+sous un utilisateur système dédié (`zkvpn`) avec seulement `CAP_NET_ADMIN`/`CAP_NET_RAW`. Le module
+noyau WireGuard est utilisé s'il existe, sinon `wireguard-go` (conteneurs, noyaux anciens).
+
+Windows et Android (Termux) ne sont pas pris en charge : le projet manipule le routage, iptables et
+des interfaces WireGuard, ce qui demande Linux et les droits root.
+
+Le banc `tests/distro/run.sh <image> [--e2e]` installe ZK-VPN dans un conteneur avec systemd, démarre le
+vrai service, y connecte un vrai client et vérifie le nettoyage ; la CI le lance sur Ubuntu 24.04,
+Debian 12 et Fedora 41.
+
+### Clés de preuve de production
+`scripts/setup_circuits.sh` génère des clés avec un setup **mono-partie** (développement). Pour la
+production, utilisez `scripts/ceremony.sh` : phase 1 publique (fichier Powers of Tau d'une grande
+cérémonie), puis une chaîne de contributions indépendantes, une balise publique, et
+`ceremony.sh verify` qui revérifie toute la chaîne. Les clés sont sûres si au moins un participant a
+détruit sa contribution.
 
 ## Licence
 [MIT](LICENSE)

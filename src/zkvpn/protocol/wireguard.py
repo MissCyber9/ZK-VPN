@@ -39,6 +39,16 @@ def validate_endpoint(endpoint: str) -> str:
     return endpoint
 
 
+def _stderr_text(e) -> str:
+    """Readable one-line reason from a failed subprocess (wireguard-go prints a long banner)."""
+    err = e.stderr
+    if isinstance(err, bytes):
+        err = err.decode(errors="replace")
+    lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
+    errors = [ln for ln in lines if "ERROR" in ln or "rror:" in ln]
+    return (errors or lines or ["no output"])[-1]
+
+
 _UNITS = {"B": 1, "KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3, "TiB": 1024 ** 4}
 _TRANSFER_RE = re.compile(
     r"([\d.]+)\s*([KMGT]?i?B)\s+received,\s*([\d.]+)\s*([KMGT]?i?B)\s+sent")
@@ -171,7 +181,7 @@ class WireGuardInterface:
         except subprocess.TimeoutExpired:
             raise RuntimeError("WireGuard key generation timeout")
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"WireGuard key generation failed: {e.stderr}")
+            raise RuntimeError(f"WireGuard key generation failed: {_stderr_text(e)}")
         except FileNotFoundError:
             raise RuntimeError("WireGuard (wg) not installed. Please install wireguard-tools.")
     
@@ -202,7 +212,7 @@ class WireGuardInterface:
                 )
                 self.public_key = completed.stdout.strip()
             except subprocess.CalledProcessError as e:
-                raise RuntimeError(f"Invalid private key: {e.stderr}")
+                raise RuntimeError(f"Invalid private key: {_stderr_text(e)}")
         else:
             self.generate_keypair()
         
@@ -279,7 +289,7 @@ class WireGuardInterface:
         except subprocess.TimeoutExpired:
             raise RuntimeError("WireGuard configuration timeout")
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"WireGuard configuration failed: {e.stderr}")
+            raise RuntimeError(f"WireGuard configuration failed: {_stderr_text(e)}")
         except Exception as e:
             logger.error(f"Failed to configure WireGuard: {e}")
             return False
@@ -321,7 +331,7 @@ class WireGuardInterface:
         except subprocess.TimeoutExpired:
             raise RuntimeError("WireGuard add peer timeout")
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to add peer: {e.stderr}")
+            raise RuntimeError(f"Failed to add peer: {_stderr_text(e)}")
     
     @memory_guard("wireguard_remove_peer")
     async def remove_peer(self, public_key: str) -> bool:
@@ -348,7 +358,7 @@ class WireGuardInterface:
             return True
             
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to remove peer: {e.stderr}")
+            logger.error(f"Failed to remove peer: {_stderr_text(e)}")
             return False
     
     async def get_status(self) -> Dict[str, Any]:
@@ -407,7 +417,7 @@ class WireGuardInterface:
             return True
             
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to set address: {e.stderr}")
+            logger.error(f"Failed to set address: {_stderr_text(e)}")
             return False
     
     async def delete_interface(self) -> bool:
@@ -429,7 +439,7 @@ class WireGuardInterface:
             return True
             
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to delete interface: {e.stderr}")
+            logger.error(f"Failed to delete interface: {_stderr_text(e)}")
             return False
     
     @property
