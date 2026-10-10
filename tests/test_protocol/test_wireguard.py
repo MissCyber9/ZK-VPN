@@ -478,6 +478,12 @@ class TestErrorMessages:
         err = subprocess.CalledProcessError(1, "wireguard-go", stderr=banner.encode())   # bytes!
         assert _stderr_text(err) == "ERROR: (zkvpn0) 2026/10/10 Failed to create TUN device: permission denied"
 
+    def test_error_reported_on_stdout_is_found(self):
+        from zkvpn.protocol.wireguard import _stderr_text
+        err = subprocess.CalledProcessError(1, "wireguard-go", output=b"ERROR: tun denied\n",
+                                            stderr=b"\xe2\x94\x94\xe2\x94\x80\n")
+        assert _stderr_text(err) == "ERROR: tun denied"
+
     def test_empty_stderr(self):
         from zkvpn.protocol.wireguard import _stderr_text
         assert _stderr_text(subprocess.CalledProcessError(1, "x", stderr=None)) == "no output"
