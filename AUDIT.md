@@ -68,10 +68,30 @@ Audit par lecture du code (tests non exécutés : pytest absent de l'environneme
 
 **Décision de conception** : le chaînage `prev_tag` n'est plus imposé par défaut (`enforce_chain=False`). Il rendait toute reconnexion impossible (le client ne conserve pas le dernier tag, le serveur perd son état au redémarrage) alors que le rejeu est déjà empêché par les challenges à usage unique liés à la clé WireGuard.
 
+## Vérification en conditions réelles (`tests/e2e`)
+Banc d'essai en namespaces Linux (client, serveur, routeur « FAI », site web) avec de **vrais** processus `zkvpn serve` / `zkvpn connect`, un vrai WireGuard (module noyau ou `wireguard-go`), de vraies règles iptables et de vraies preuves Groth16. Les 8 scénarios passent :
+
+| Scénario | Ce qui est vérifié |
+|---|---|
+| Client avec identité autorisée | Le site web voit l'adresse du **serveur**, pas celle du client ; aucun paquet ne contourne le tunnel (compteur sur le routeur FAI). |
+| Client sans preuve | Le serveur ne l'admet pas : rien ne passe et rien ne fuit. |
+| Identité hors liste blanche | Connexion refusée, aucune règle ni route laissée, le client garde son chemin normal. |
+| Tunnel qui meurt (processus tué) | Avec kill-switch : le site n'est pas joignable et **0 paquet** ne part hors tunnel. |
+| Même panne **sans** kill-switch (témoin) | Le trafic fuit en clair : prouve que le test précédent sait détecter une fuite. |
+| `disconnect` | Routes, règles, interface supprimées ; chemin direct rétabli. |
+| Règles serveur | NAT + isolation client-à-client présents ; **aucune règle résiduelle** après SIGTERM. |
+
+**Défauts de logique que seul ce banc pouvait révéler** (tous corrigés) :
+- le client n'installait **aucune route** : le trafic ne passait pas par le tunnel malgré `allowed_ips=0.0.0.0/0` ;
+- le serveur n'avait **ni NAT ni règles de forward** : un client ne pouvait pas atteindre Internet via lui ;
+- l'admission attendait la preuve 2 à 10 s alors qu'elle prend 1 à 4 s (bien plus sur téléphone), et retenait un slot de concurrence pendant l'attente (slowloris) : timeouts séparés (hello 5 s / preuve 30 s), limites par IP et globales, sémaphore limité à la vérification ;
+- `zkvpn connect` renvoyait le code 0 même en cas d'échec ;
+- pas de repli quand le module noyau WireGuard est absent (conteneurs, VM) : repli sur `wireguard-go`.
+
 ## Limites connues (non résolues)
 1. **Cérémonie de confiance mono-partie** : quiconque a gardé l'entropie du setup local peut forger des preuves. Production : cérémonie multipartite (phase 1 publique + phase 2 dédiée).
-2. **Aucun test sur machine réelle** du kill-switch (iptables), de l'unité systemd, de `install.sh` de bout en bout : seuls la construction des règles, le rollback, la syntaxe shell et le protocole d'admission (TCP réel, preuves réelles) sont testés.
-3. **Canal d'admission en clair** : il ne transporte que des données publiques, mais un attaquant réseau peut bloquer ou ralentir l'admission (déni de service), et la vérification de preuve coûte du CPU (borné par un sémaphore de 8).
+2. **Non couvert par le banc** : `install.sh` de bout en bout et l'unité systemd (il faut une vraie machine ou une VM avec systemd), la protection DNS (elle réécrit `/etc/resolv.conf`, partagé entre namespaces), IPv6, plusieurs clients simultanés.
+3. **Canal d'admission en clair** : il ne transporte que des données publiques, mais un attaquant réseau peut bloquer ou ralentir l'admission, et la vérification coûte du CPU (bornée).
 4. **Liste blanche vide = toute identité valide est admise** (inscription ouverte, sybil possible). Renseigner `ZKVPN_AUTHORIZED_IDENTITIES` en production.
 5. **Identité** : le fichier secret n'est pas chiffré (protégé seulement par les permissions 0600).
 6. Pas d'audit externe : ne pas utiliser pour protéger des utilisateurs réels.

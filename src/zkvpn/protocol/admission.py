@@ -26,7 +26,8 @@ from zkvpn.zk import SessionProof, SessionProver
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_BYTES = 64 * 1024
-STEP_TIMEOUT = 10.0
+HELLO_TIMEOUT = 5.0     # a client must speak quickly...
+PROOF_TIMEOUT = 30.0    # ...but generating a proof can take seconds on slow devices
 
 
 class AdmissionError(RuntimeError):
@@ -52,13 +53,20 @@ class AdmissionServer:
     """Accepts clients on ``port`` and admits them into the tunnel after a ZK proof."""
 
     def __init__(self, tunnel, host: Optional[str] = None, port: Optional[int] = None,
-                 max_concurrent: int = 8, step_timeout: float = STEP_TIMEOUT):
+                 max_verifications: int = 4, max_connections: int = 64,
+                 max_per_ip: int = 4, hello_timeout: float = HELLO_TIMEOUT,
+                 proof_timeout: float = PROOF_TIMEOUT):
         self.tunnel = tunnel
         self.host = host or settings.host
         self.port = port if port is not None else settings.admission_port
-        self.step_timeout = step_timeout
-        # Proof verification is CPU-heavy: bound the number of simultaneous attempts.
-        self._slots = asyncio.Semaphore(max_concurrent)
+        self.hello_timeout = hello_timeout
+        self.proof_timeout = proof_timeout
+        self.max_connections = max_connections
+        self.max_per_ip = max_per_ip
+        # Verification is CPU-heavy: bound it, but never hold a slot while merely
+        # waiting on a (possibly malicious) slow client.
+        self._verify_slots = asyncio.Semaphore(max_verifications)
+        self._per_ip: Dict[str, int] = {}
         self._server: Optional[asyncio.AbstractServer] = None
 
     async def start(self) -> None:
@@ -76,9 +84,15 @@ class AdmissionServer:
 
     async def _handle(self, reader: asyncio.StreamReader,
                       writer: asyncio.StreamWriter) -> None:
+        peer = (writer.get_extra_info("peername") or ("?",))[0]
+        if sum(self._per_ip.values()) >= self.max_connections \
+                or self._per_ip.get(peer, 0) >= self.max_per_ip:
+            logger.info("Admission attempt dropped: too many connections")
+            writer.close()
+            return
+        self._per_ip[peer] = self._per_ip.get(peer, 0) + 1
         try:
-            async with self._slots:
-                await self._admit(reader, writer)
+            await self._admit(reader, writer)
         except (asyncio.TimeoutError, asyncio.IncompleteReadError, ConnectionError,
                 ValueError, KeyError, TypeError, AdmissionError) as e:
             logger.info(f"Admission attempt dropped: {type(e).__name__}")
@@ -87,6 +101,9 @@ class AdmissionServer:
             except Exception:
                 pass
         finally:
+            self._per_ip[peer] -= 1
+            if not self._per_ip[peer]:
+                del self._per_ip[peer]
             writer.close()
             try:
                 await writer.wait_closed()
@@ -94,7 +111,7 @@ class AdmissionServer:
                 pass
 
     async def _admit(self, reader, writer) -> None:
-        hello = await _recv(reader, self.step_timeout)
+        hello = await _recv(reader, self.hello_timeout)
         if hello.get("type") != "hello":
             raise ValueError("expected hello")
         wg_key = validate_public_key(hello["wg_public_key"])
@@ -102,7 +119,7 @@ class AdmissionServer:
         nonce = self.tunnel.issue_challenge()
         await _send(writer, {"type": "challenge", "nonce": nonce})
 
-        msg = await _recv(reader, self.step_timeout)
+        msg = await _recv(reader, self.proof_timeout)
         if msg.get("type") != "proof":
             raise ValueError("expected proof")
         signals = msg["public_signals"]
@@ -110,7 +127,9 @@ class AdmissionServer:
             raise ValueError("malformed proof")
         proof = SessionProof(msg["proof"], [str(s) for s in signals])
 
-        if not await self.tunnel.add_client(wg_key, nonce=nonce, proof=proof):
+        async with self._verify_slots:
+            admitted = await self.tunnel.add_client(wg_key, nonce=nonce, proof=proof)
+        if not admitted:
             # Deliberately generic: do not tell an attacker which check failed.
             await _send(writer, {"type": "error", "reason": "admission refused"})
             return

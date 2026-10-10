@@ -26,7 +26,8 @@ async def server():
     ips = iter(["10.0.0.2", "10.0.0.3", "10.0.0.4"])
     with patch.object(WireGuardInterface, "add_peer", AsyncMock(return_value=True)), \
          patch.object(tunnel, "_assign_client_ip", AsyncMock(side_effect=lambda: next(ips))):
-        srv = AdmissionServer(tunnel, host="127.0.0.1", port=0, step_timeout=2)
+        srv = AdmissionServer(tunnel, host="127.0.0.1", port=0,
+                              hello_timeout=2, proof_timeout=15, max_per_ip=50)
         await srv.start()
         yield tunnel, srv
         await srv.stop()
@@ -120,7 +121,9 @@ async def test_connect_uses_server_assigned_ip(server):
     client.interface._initialized = True
     with patch.object(WireGuardInterface, "add_peer", AsyncMock(return_value=True)), \
          patch.object(WireGuardInterface, "set_address", AsyncMock(return_value=True)) as set_addr, \
-         patch.object(client.killswitch, "enable", AsyncMock(return_value=True)):
+         patch.object(client.killswitch, "enable", AsyncMock(return_value=True)), \
+         patch.object(client.routes, "enable", AsyncMock(return_value=True)), \
+         patch.object(client, "_bring_up", AsyncMock()):
         ok = await client.connect(f"127.0.0.1:51820", WG2,
                                   identity_sk=generate_identity(), admission_port=srv.port)
     assert ok is True
@@ -150,3 +153,15 @@ def test_identity_file_permissions(tmp_path):
     os.chmod(path, 0o644)
     with pytest.raises(PermissionError):
         load_identity(path)                      # refuse world-readable secrets
+
+
+async def test_per_ip_limit_drops_extra_connections(server):
+    tunnel, srv = server
+    srv.max_per_ip = 2
+    held = [await asyncio.open_connection("127.0.0.1", srv.port) for _ in range(2)]
+    await asyncio.sleep(0.2)
+    reader, writer = await asyncio.open_connection("127.0.0.1", srv.port)
+    assert await asyncio.wait_for(reader.read(), 3) == b""      # dropped without a word
+    for _, w in held:
+        w.close()
+    writer.close()

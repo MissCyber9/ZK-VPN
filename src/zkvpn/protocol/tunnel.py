@@ -15,6 +15,7 @@ from zkvpn.core.config import settings
 from zkvpn.core.memory import session_manager, memory_guard
 from zkvpn.protocol.admission import AdmissionServer, request_admission
 from zkvpn.protocol.killswitch import KillSwitch
+from zkvpn.protocol.routing import RouteManager, ServerNAT
 from zkvpn.protocol.wireguard import WireGuardInterface, WireGuardPeer, wg_interface
 from zkvpn.zk import SessionProof, SessionVerifier
 
@@ -57,6 +58,8 @@ class ZKTunnel:
         authorized = [i.strip() for i in settings.authorized_identities.split(",") if i.strip()]
         self.auth = SessionVerifier(authorized=authorized or None)
         self.killswitch = KillSwitch(self.interface.interface)
+        self.routes = RouteManager(self.interface.interface)
+        self.nat = ServerNAT(self.interface.interface, self.config.network_cidr)
         self.admission: Optional[AdmissionServer] = None
         self.client_ips: Dict[str, str] = {}
         self._client_sessions: Dict[str, str] = {}
@@ -76,6 +79,8 @@ class ZKTunnel:
 
             await self.interface.set_address(self._cidr(self.config.server_ip))
             await self._enable_ip_forwarding()
+            if settings.server_nat_enabled and not await self.nat.enable():
+                raise RuntimeError("NAT/forwarding rules could not be installed")
 
             if settings.require_client_proof:
                 self.admission = AdmissionServer(self)
@@ -91,6 +96,7 @@ class ZKTunnel:
             if self.admission:
                 await self.admission.stop()
                 self.admission = None
+            await self.nat.disable()
             return False
 
     @memory_guard("tunnel_connect")
@@ -133,6 +139,12 @@ class ZKTunnel:
             if settings.killswitch_enabled and not await self.killswitch.enable([peer_endpoint]):
                 raise RuntimeError("kill-switch could not be enabled")
 
+            # Send all traffic through the tunnel (otherwise nothing uses it)
+            await self._bring_up(self.interface.interface)
+            endpoint_ip = peer_endpoint.rpartition(":")[0].strip("[]")
+            if not await self.routes.enable(endpoint_ip):
+                raise RuntimeError("could not route traffic through the tunnel")
+
             self._current_session = session_manager.create_session(peer_public_key)
             self._health_check_task = asyncio.create_task(self._health_check())
             self._is_connected = True
@@ -157,8 +169,10 @@ class ZKTunnel:
                 await self.admission.stop()
                 self.admission = None
 
-            # Explicit disconnect: traffic may flow normally again
+            # Explicit disconnect: restore normal routing/traffic, drop server rules
+            await self.routes.disable()
             await self.killswitch.disable()
+            await self.nat.disable()
 
             await self.interface.delete_interface()
 
@@ -233,6 +247,13 @@ class ZKTunnel:
             session_manager.delete_session(session_id)
         return removed
 
+    async def _bring_up(self, interface: str) -> None:
+        """Make sure the link is up (idempotent)."""
+        proc = await asyncio.create_subprocess_exec(
+            "ip", "link", "set", interface, "up",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await proc.wait()
+
     async def _health_check(self):
         """Periodic health check."""
         while True:
@@ -284,6 +305,7 @@ class ZKTunnel:
             "public_key": self.interface.public_key,
             "has_session": self._current_session is not None,
             "killswitch": self.killswitch.active,
+            "nat": self.nat.active,
             "clients": len(self.client_ips),
         }
 

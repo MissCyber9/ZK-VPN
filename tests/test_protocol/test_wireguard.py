@@ -138,7 +138,8 @@ class TestZKTunnel:
         tunnel = ZKTunnel()
         
         with patch.object(tunnel, '_enable_ip_forwarding') as mock_forward, \
-             patch('zkvpn.protocol.tunnel.AdmissionServer.start', AsyncMock()) as admission:
+             patch('zkvpn.protocol.tunnel.AdmissionServer.start', AsyncMock()) as admission, \
+             patch.object(tunnel.nat, 'enable', AsyncMock(return_value=True)):
             mock_forward.return_value = None
             
             result = await tunnel.start_server()
@@ -160,7 +161,9 @@ class TestZKTunnel:
         
         tunnel = ZKTunnel()
         
-        with patch.object(tunnel.killswitch, 'enable', AsyncMock(return_value=True)) as ks:
+        with patch.object(tunnel.killswitch, 'enable', AsyncMock(return_value=True)) as ks, \
+             patch.object(tunnel.routes, 'enable', AsyncMock(return_value=True)), \
+             patch.object(tunnel, '_bring_up', AsyncMock()):
             result = await tunnel.connect("10.0.0.1:51820", PUB2)
         ks.assert_awaited_once_with(["10.0.0.1:51820"])
         
@@ -394,3 +397,30 @@ class TestRemoveClient:
             assert await tunnel.remove_client(PUB3) is True
         delete.assert_not_called()
         assert PUB3 not in tunnel._client_sessions
+
+
+class TestRouting:
+    def test_parse_route_get(self):
+        from zkvpn.protocol.routing import parse_route_get
+        assert parse_route_get("203.0.113.5 via 10.9.0.254 dev eth0 src 10.9.0.2") == ("10.9.0.254", "eth0")
+        assert parse_route_get("10.9.0.1 dev eth0 src 10.9.0.2") == (None, "eth0")
+
+    def test_pin_command_v4_and_v6(self):
+        from zkvpn.protocol.routing import pin_command
+        assert pin_command("203.0.113.5", "10.9.0.254", "eth0") == [
+            "ip", "route", "replace", "203.0.113.5/32", "via", "10.9.0.254", "dev", "eth0", "proto", "252"]
+        assert pin_command("2001:db8::1", None, "eth0")[:5] == ["ip", "-6", "route", "replace", "2001:db8::1/128"]
+
+    async def test_hostname_endpoint_refused(self):
+        from zkvpn.protocol.routing import RouteManager
+        assert await RouteManager("zkvpn0").enable("vpn.example.com") is False
+
+    def test_nat_rules_isolate_clients_and_masquerade(self):
+        from zkvpn.protocol.routing import nat_rules
+        rules = nat_rules("zkvpn0", "10.0.0.0/24")
+        flat = [" ".join(r) for r in rules]
+        assert any("-s 10.0.0.0/24 ! -o zkvpn0 -j MASQUERADE" in r for r in flat)
+        drop = next(i for i, r in enumerate(flat) if "-i zkvpn0 -o zkvpn0 -j DROP" in r)
+        accept = next(i for i, r in enumerate(flat) if "-A ZKVPN_FWD -i zkvpn0 -j ACCEPT" in r)
+        assert drop < accept            # client-to-client dropped before the generic accept
+        assert flat[-1].startswith("iptables -I FORWARD 1")   # activated last

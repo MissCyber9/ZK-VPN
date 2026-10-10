@@ -11,10 +11,7 @@ import ipaddress
 from typing import Any, Optional, Dict, List, Tuple
 from dataclasses import dataclass
 import logging
-import secrets
-import tempfile
-import os
-from pathlib import Path
+import shutil
 
 from zkvpn.core.config import settings
 from zkvpn.core.memory import memory_guard, key_store
@@ -220,14 +217,26 @@ class WireGuardInterface:
             )
             
             if result.returncode != 0:
-                # Create interface
-                await asyncio.to_thread(subprocess.run,
+                # Create interface: kernel module first, wireguard-go as fallback
+                kernel = await asyncio.to_thread(subprocess.run,
                     ["ip", "link", "add", self.interface, "type", "wireguard"],
-                    check=True,
                     capture_output=True,
                     timeout=5
                 )
-                logger.info(f"Created interface {self.interface}")
+                if kernel.returncode == 0:
+                    logger.info(f"Created kernel interface {self.interface}")
+                else:
+                    userspace = shutil.which("wireguard-go")
+                    if not userspace:
+                        raise RuntimeError(
+                            "Kernel WireGuard unavailable and wireguard-go not installed")
+                    await asyncio.to_thread(subprocess.run,
+                        [userspace, self.interface],
+                        check=True,
+                        capture_output=True,
+                        timeout=15
+                    )
+                    logger.info(f"Created userspace interface {self.interface} (wireguard-go)")
             
             # Configure WireGuard
             config_cmd = [
