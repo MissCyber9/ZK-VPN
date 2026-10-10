@@ -16,6 +16,7 @@ from zkvpn.core.memory import session_manager, memory_guard
 from zkvpn.circuits.prover import prover, Proof
 from zkvpn.circuits.verifier import verifier
 from zkvpn.protocol.wireguard import WireGuardInterface, WireGuardPeer, wg_interface
+from zkvpn.protocol.killswitch import KillSwitch
 from zkvpn.zk import SessionProof, SessionVerifier
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,8 @@ class ZKTunnel:
         self._last_proof: Optional[Proof] = None
         authorized = [i.strip() for i in settings.authorized_identities.split(",") if i.strip()]
         self.auth = SessionVerifier(authorized=authorized or None)
+        self.killswitch = KillSwitch(self.interface.interface)
+        self._client_sessions: Dict[str, str] = {}
         
         logger.info("ZK Tunnel initialized")
     
@@ -128,6 +131,10 @@ class ZKTunnel:
             
             await self.interface.add_peer(peer)
             
+            # Fail closed: without the kill-switch a tunnel drop would leak traffic
+            if settings.killswitch_enabled and not await self.killswitch.enable([peer_endpoint]):
+                raise RuntimeError("kill-switch could not be enabled")
+            
             # Create session
             self._current_session = session_manager.create_session(peer_public_key)
             
@@ -171,6 +178,9 @@ class ZKTunnel:
                     await self._health_check_task
                 except asyncio.CancelledError:
                     pass
+            
+            # Explicit disconnect: traffic may flow normally again
+            await self.killswitch.disable()
             
             # Delete interface
             await self.interface.delete_interface()
@@ -233,7 +243,8 @@ class ZKTunnel:
             await self.interface.add_peer(peer)
             
             # Create session
-            session_manager.create_session(client_public_key)
+            session = session_manager.create_session(client_public_key)
+            self._client_sessions[client_public_key] = session.get("session_id", "")
             
             logger.info(f"Added client {client_public_key[:8]}... with IP {client_ip}")
             return True
@@ -241,6 +252,14 @@ class ZKTunnel:
         except Exception as e:
             logger.error(f"Failed to add client: {e}")
             return False
+    
+    async def remove_client(self, client_public_key: str) -> bool:
+        """Drop one client (peer + session) without tearing the server down."""
+        removed = await self.interface.remove_peer(client_public_key)
+        session_id = self._client_sessions.pop(client_public_key, None)
+        if session_id:
+            session_manager.delete_session(session_id)
+        return removed
     
     async def _generate_periodic_proofs(self):
         """Generate periodic ZK proofs for continuous verification."""

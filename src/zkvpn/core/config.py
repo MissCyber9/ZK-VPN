@@ -11,7 +11,7 @@ import logging
 from typing import Optional, Literal, Dict, Any
 from functools import lru_cache
 
-from pydantic import Field, SecretStr, validator, ConfigDict
+from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Configure module logger
@@ -94,6 +94,10 @@ class Settings(BaseSettings):
         None,
         description="Path to trusted setup parameters"
     )
+    killswitch_enabled: bool = Field(
+        True,
+        description="Block all non-tunnel traffic while connected as a client"
+    )
     zk_dir: str = Field(
         "./zk",
         description="Directory with the ZK toolchain and build/ artifacts (scripts/setup_circuits.sh)"
@@ -148,7 +152,8 @@ class Settings(BaseSettings):
         validate_default=True
     )
     
-    @validator("node_id", pre=True)
+    @field_validator("node_id", mode="before")
+    @classmethod
     def validate_node_id(cls, v: Optional[str]) -> str:
         """Ensure node_id is never empty."""
         if not v or v.strip() == "":
@@ -157,7 +162,8 @@ class Settings(BaseSettings):
             return generated
         return v.strip()
     
-    @validator("wireguard_config_dir")
+    @field_validator("wireguard_config_dir")
+    @classmethod
     def validate_config_dir(cls, v: str) -> str:
         """Validate and sanitize config directory path."""
         # Reject traversal before normalising (normpath would collapse "..")
@@ -165,7 +171,8 @@ class Settings(BaseSettings):
             raise ValueError("Path traversal detected in wireguard_config_dir")
         return os.path.normpath(v)
     
-    @validator("network_cidr")
+    @field_validator("network_cidr")
+    @classmethod
     def validate_cidr(cls, v: str) -> str:
         """Basic CIDR validation."""
         import ipaddress
@@ -208,6 +215,37 @@ class Settings(BaseSettings):
         logger.debug(f"Configuration loaded: {safe_config}")
 
 
+# Settings that must come from the environment / a secret manager, never be
+# written to the .env file by the CLI.
+SECRET_SETTINGS = frozenset({"private_key"})
+
+
+def validate_setting(key: str, value: str) -> str:
+    """Validate a ``config set`` request; returns the normalised env var name.
+
+    Raises:
+        ValueError: unknown key, secret key, control characters in the value,
+            or a value that the Settings model rejects.
+    """
+    key = key.strip().lower()
+    if key not in Settings.model_fields:
+        raise ValueError(f"Unknown setting: {key!r}")
+    if key in SECRET_SETTINGS:
+        raise ValueError(
+            f"{key} is a secret: set ZKVPN_{key.upper()} in the service environment, "
+            "not through the CLI")
+    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ValueError("Value must not contain control characters or newlines")
+    try:
+        Settings(**{key: value})
+    except ValidationError as e:
+        problems = [err["msg"] for err in e.errors() if err["loc"] and err["loc"][0] == key]
+        if problems:
+            raise ValueError(f"Invalid value for {key}: {'; '.join(problems)}")
+        raise
+    return f"ZKVPN_{key.upper()}"
+
+
 @lru_cache()
 def get_settings() -> Settings:
     """Get cached settings instance.
@@ -222,4 +260,4 @@ def get_settings() -> Settings:
 settings = get_settings()
 
 
-__all__ = ["Settings", "settings", "get_settings"]
+__all__ = ["Settings", "settings", "get_settings", "validate_setting"]

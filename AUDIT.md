@@ -53,8 +53,12 @@ Audit par lecture du code (tests non exécutés : pytest absent de l'environneme
 - README réécrit : statut maquette, pas de promesse « no logging ».
 
 ## Reste à faire
-1. ~~Vrai SNARK~~ **Fait pour l'admission des clients** : `circuits/session_auth.circom` (Groth16/bn128, Poseidon), `src/zkvpn/zk/`, `scripts/setup_circuits.sh`. Le circuit prouve la connaissance de la clé secrète d'une identité pour un challenge lié à la clé WireGuard, avec fraîcheur et chaînage ; il ne prouve **pas** l'absence de logs. Limites : cérémonie de setup mono-partie (dev), pas de transport réseau des preuves, `ZKTunnel.connect()` et les preuves périodiques utilisent encore les stubs simulés de `circuits/` (désormais marqués comme tels).
-2. Kill-switch réseau (blocage du trafic hors tunnel, DoT/DoH), `disconnect` ne devrait pas supprimer l'interface côté serveur.
-3. `wireguard.py` : remplacer `subprocess.run` bloquant par des appels async, parsing IPv6 de `wg show`.
-4. `config set` : valider clé/valeur et ne pas afficher les valeurs.
-5. Migrer les `@validator` pydantic v1 vers `@field_validator`, ajouter une CI et une licence.
+1. **Vrai SNARK : fait pour l'admission des clients** (`circuits/session_auth.circom`, `src/zkvpn/zk/`, `scripts/setup_circuits.sh`). Le circuit prouve la connaissance de la clé secrète d'une identité pour un challenge lié à la clé WireGuard, avec fraîcheur et chaînage ; il ne prouve **pas** l'absence de logs. Limites restantes :
+   - cérémonie de setup mono-partie (développement) : à remplacer par une cérémonie multipartite pour la production ;
+   - pas de transport réseau des preuves entre pairs (l'API `issue_challenge` / `add_client(proof=...)` existe) ;
+   - `ZKTunnel.connect()` et les preuves périodiques utilisent encore les stubs simulés de `circuits/` (marqués comme tels).
+2. **Kill-switch : fait** (`protocol/killswitch.py`, chaîne `ZKVPN_KILLSWITCH` IPv4+IPv6, bloque aussi DoT/DoH, activé par `connect()` et en échec fermé). Non testé sur un vrai pare-feu dans cet environnement : seuls la construction des règles et le rollback sont testés. `remove_client()` retire un pair sans démonter le serveur.
+3. **`wireguard.py` : fait** — appels `subprocess` déplacés hors de la boucle (`asyncio.to_thread`), parseur de `wg show` réécrit (les champs des pairs étaient indentés de 2 espaces, pas 4, donc jamais lus ; IPv6 et unité `B` gérés).
+4. **`config set` : fait** — clé connue, valeur validée par le modèle, secrets refusés, injection par retour à la ligne refusée, écriture atomique en 0600, valeur plus affichée.
+5. **Pydantic v2 (`field_validator`) et CI GitHub Actions : faits.**
+6. **Restent ouverts** : licence (choix du propriétaire), `ZKTunnel.connect()` à brancher sur le vrai prover côté client, transport des preuves, test du kill-switch et de l'unité systemd sur une vraie machine.

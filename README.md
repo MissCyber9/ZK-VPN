@@ -21,13 +21,13 @@ Prototype de VPN WireGuard piloté en Python, avec une couche de « preuves » d
   WireGuard**, avec horodatage frais et chaînage anti-rejeu (`zk/`, `src/zkvpn/zk/`,
   `circuits/session_auth.circom`). Le serveur refuse les clients sans preuve valide
   (`ZKVPN_REQUIRE_CLIENT_PROOF`, `ZKVPN_AUTHORIZED_IDENTITIES`).
+- **Kill-switch** iptables/ip6tables (bloque tout hors tunnel, DoT/DoH inclus), activé à la connexion client
 - Stubs de preuve « no-logging » **simulés** (`circuits/prover.py`, `verifier.py`, `no_logging.py`)
 
 ## Ce qui n'existe pas (encore)
 - Transport réseau des preuves entre pairs (l'API `issue_challenge` / `add_client(proof=...)` existe, pas le protocole)
 - Cérémonie de confiance multipartite pour les clés de preuve
 - Réseau P2P, système de réputation, interface web
-- Kill-switch réseau complet
 
 ## Installation (développement)
 ```bash

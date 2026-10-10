@@ -42,6 +42,57 @@ def validate_endpoint(endpoint: str) -> str:
     return endpoint
 
 
+_UNITS = {"B": 1, "KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3, "TiB": 1024 ** 4}
+_TRANSFER_RE = re.compile(
+    r"([\d.]+)\s*([KMGT]?i?B)\s+received,\s*([\d.]+)\s*([KMGT]?i?B)\s+sent")
+
+
+def parse_transfer(value: str, unit: str) -> int:
+    """Convert a ``wg show`` quantity ("1.23", "KiB") to bytes."""
+    return int(float(value) * _UNITS.get(unit, 1))
+
+
+def parse_wg_show(output: str, interface: str = "") -> Dict[str, Any]:
+    """Parse ``wg show <iface>`` output.
+
+    Fields are matched on their stripped ``key: value`` form, so indentation
+    does not matter and values containing ``:`` (IPv6 endpoints) stay intact.
+    """
+    status: Dict[str, Any] = {
+        "interface": interface, "public_key": None, "listen_port": None, "peers": []
+    }
+    peer = None
+    for raw in output.splitlines():
+        key, sep, value = raw.strip().partition(":")
+        if not sep:
+            continue
+        value = value.strip()
+        if key == "interface":
+            status["interface"] = value
+        elif key == "peer":
+            peer = {"public_key": value, "endpoint": None, "allowed_ips": [],
+                    "latest_handshake": None, "transfer": {"rx": 0, "tx": 0}}
+            status["peers"].append(peer)
+        elif peer is None:
+            if key == "public key":
+                status["public_key"] = value
+            elif key == "listening port" and value.isdigit():
+                status["listen_port"] = int(value)
+        elif key == "endpoint":
+            peer["endpoint"] = value
+        elif key == "allowed ips":
+            peer["allowed_ips"] = [] if value == "(none)" else [
+                ip.strip() for ip in value.split(",")]
+        elif key == "latest handshake":
+            peer["latest_handshake"] = value
+        elif key == "transfer":
+            m = _TRANSFER_RE.search(value)
+            if m:
+                peer["transfer"]["rx"] = parse_transfer(m.group(1), m.group(2))
+                peer["transfer"]["tx"] = parse_transfer(m.group(3), m.group(4))
+    return status
+
+
 @dataclass
 class WireGuardPeer:
     """WireGuard peer configuration."""
@@ -142,14 +193,16 @@ class WireGuardInterface:
             self.private_key = private_key
             # Generate public key from private key
             try:
-                self.public_key = subprocess.run(
+                completed = await asyncio.to_thread(
+                    subprocess.run,
                     ["wg", "pubkey"],
                     input=self.private_key,
                     capture_output=True,
                     text=True,
                     check=True,
                     timeout=5
-                ).stdout.strip()
+                )
+                self.public_key = completed.stdout.strip()
             except subprocess.CalledProcessError as e:
                 raise RuntimeError(f"Invalid private key: {e.stderr}")
         else:
@@ -158,7 +211,7 @@ class WireGuardInterface:
         # Create interface if it doesn't exist
         try:
             # Check if interface exists
-            result = subprocess.run(
+            result = await asyncio.to_thread(subprocess.run,
                 ["ip", "link", "show", self.interface],
                 capture_output=True,
                 text=True,
@@ -167,7 +220,7 @@ class WireGuardInterface:
             
             if result.returncode != 0:
                 # Create interface
-                subprocess.run(
+                await asyncio.to_thread(subprocess.run,
                     ["ip", "link", "add", self.interface, "type", "wireguard"],
                     check=True,
                     capture_output=True,
@@ -195,7 +248,7 @@ class WireGuardInterface:
                 raise RuntimeError(f"Failed to configure WireGuard: {stderr.decode()}")
             
             # Bring interface up
-            subprocess.run(
+            await asyncio.to_thread(subprocess.run,
                 ["ip", "link", "set", self.interface, "up"],
                 check=True,
                 capture_output=True,
@@ -203,7 +256,7 @@ class WireGuardInterface:
             )
             
             # Assign IP address
-            subprocess.run(
+            await asyncio.to_thread(subprocess.run,
                 ["ip", "addr", "add", self.address, "dev", self.interface],
                 capture_output=True,
                 timeout=5
@@ -246,7 +299,7 @@ class WireGuardInterface:
             if peer.endpoint:
                 cmd.extend(["endpoint", peer.endpoint])
             
-            subprocess.run(cmd, check=True, capture_output=True, timeout=5)
+            await asyncio.to_thread(subprocess.run, cmd, check=True, capture_output=True, timeout=5)
             
             # Store in memory
             self.peers[peer.public_key] = peer
@@ -271,7 +324,7 @@ class WireGuardInterface:
             bool: True if successful
         """
         try:
-            subprocess.run(
+            await asyncio.to_thread(subprocess.run,
                 ["wg", "set", self.interface, "peer", public_key, "remove"],
                 check=True,
                 capture_output=True,
@@ -295,7 +348,7 @@ class WireGuardInterface:
             Dict: Interface and peers status
         """
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(subprocess.run,
                 ["wg", "show", self.interface],
                 capture_output=True,
                 text=True,
@@ -305,48 +358,7 @@ class WireGuardInterface:
             if result.returncode != 0:
                 return {"error": "Interface not found"}
             
-            # Parse wg show output
-            status = {
-                "interface": self.interface,
-                "public_key": None,
-                "listen_port": None,
-                "peers": []
-            }
-            
-            current_peer = None
-            
-            for line in result.stdout.split('\n'):
-                if line.startswith('interface:'):
-                    pass  # Already have interface name
-                elif line.startswith('  public key:'):
-                    status['public_key'] = line.split(':')[1].strip()
-                elif line.startswith('  listening port:'):
-                    status['listen_port'] = int(line.split(':')[1].strip())
-                elif line.startswith('peer:'):
-                    current_peer = {
-                        'public_key': line.split(':')[1].strip(),
-                        'endpoint': None,
-                        'allowed_ips': [],
-                        'latest_handshake': None,
-                        'transfer': {'rx': 0, 'tx': 0}
-                    }
-                    status['peers'].append(current_peer)
-                elif current_peer and line.startswith('    endpoint:'):
-                    current_peer['endpoint'] = line.split(':')[1].strip()
-                elif current_peer and line.startswith('    allowed ips:'):
-                    ips = line.split(':')[1].strip()
-                    current_peer['allowed_ips'] = [ip.strip() for ip in ips.split(',')]
-                elif current_peer and line.startswith('    latest handshake:'):
-                    hs = line.split(':')[1].strip()
-                    current_peer['latest_handshake'] = hs
-                elif current_peer and line.startswith('    transfer:'):
-                    # Parse "1.23 KiB received, 4.56 KiB sent"
-                    match = re.search(r'([\d.]+)\s*([KMG]iB)?\s*received,\s*([\d.]+)\s*([KMG]iB)?\s*sent', line)
-                    if match:
-                        rx_val, rx_unit, tx_val, tx_unit = match.groups()
-                        current_peer['transfer']['rx'] = self._parse_transfer(rx_val, rx_unit)
-                        current_peer['transfer']['tx'] = self._parse_transfer(tx_val, tx_unit)
-            
+            status = parse_wg_show(result.stdout, self.interface)
             return status
             
         except subprocess.TimeoutExpired:
@@ -354,18 +366,6 @@ class WireGuardInterface:
         except Exception as e:
             logger.error(f"Failed to get status: {e}")
             return {"error": str(e)}
-    
-    def _parse_transfer(self, value: str, unit: Optional[str]) -> int:
-        """Parse transfer value to bytes."""
-        val = float(value)
-        if unit == 'KiB':
-            return int(val * 1024)
-        elif unit == 'MiB':
-            return int(val * 1024 * 1024)
-        elif unit == 'GiB':
-            return int(val * 1024 * 1024 * 1024)
-        else:
-            return int(val)
     
     async def set_address(self, address: str) -> bool:
         """Set interface IP address.
@@ -378,14 +378,14 @@ class WireGuardInterface:
         """
         try:
             # Remove existing addresses
-            subprocess.run(
+            await asyncio.to_thread(subprocess.run,
                 ["ip", "addr", "flush", "dev", self.interface],
                 capture_output=True,
                 timeout=5
             )
             
             # Add new address
-            subprocess.run(
+            await asyncio.to_thread(subprocess.run,
                 ["ip", "addr", "add", address, "dev", self.interface],
                 check=True,
                 capture_output=True,
@@ -407,7 +407,7 @@ class WireGuardInterface:
             bool: True if successful
         """
         try:
-            subprocess.run(
+            await asyncio.to_thread(subprocess.run,
                 ["ip", "link", "delete", self.interface],
                 check=True,
                 capture_output=True,

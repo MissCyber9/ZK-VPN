@@ -6,6 +6,7 @@ WireGuard integration with zero-knowledge proof authentication.
 from zkvpn.protocol.wireguard import WireGuardInterface, WireGuardPeer, wg_interface
 from zkvpn.protocol.tunnel import ZKTunnel, TunnelConfig, tunnel
 from zkvpn.protocol.dns import DNSProtector, dns_protector
+from zkvpn.protocol.killswitch import KillSwitch, killswitch
 
 __all__ = [
     "WireGuardInterface",
@@ -15,5 +16,7 @@ __all__ = [
     "TunnelConfig",
     "tunnel",
     "DNSProtector",
-    "dns_protector"
+    "dns_protector",
+    "KillSwitch",
+    "killswitch",
 ]
