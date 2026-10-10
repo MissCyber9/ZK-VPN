@@ -160,6 +160,15 @@ class DNSProtector:
                 content += f"nameserver {dns}\n"
             resolv_conf.write_text(content)
     
+    async def _run(self, cmd: List[str]) -> int:
+        """Run a command and wait for completion (so rules are really applied)."""
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        return await proc.wait()
+
     async def _block_dns_leaks(self):
         """Block DNS on all interfaces except VPN."""
         try:
@@ -172,7 +181,7 @@ class DNSProtector:
                 "--dport", "53",
                 "-j", "DROP"
             ]
-            await asyncio.create_subprocess_exec(*cmd)
+            await self._run(cmd)
             
             cmd = [
                 "iptables", "-I", "OUTPUT", "!",
@@ -181,7 +190,7 @@ class DNSProtector:
                 "--dport", "53",
                 "-j", "DROP"
             ]
-            await asyncio.create_subprocess_exec(*cmd)
+            await self._run(cmd)
             
             # IPv6 DNS leak prevention
             cmd = [
@@ -191,7 +200,7 @@ class DNSProtector:
                 "--dport", "53",
                 "-j", "DROP"
             ]
-            await asyncio.create_subprocess_exec(*cmd)
+            await self._run(cmd)
             
             cmd = [
                 "ip6tables", "-I", "OUTPUT", "!",
@@ -200,7 +209,7 @@ class DNSProtector:
                 "--dport", "53",
                 "-j", "DROP"
             ]
-            await asyncio.create_subprocess_exec(*cmd)
+            await self._run(cmd)
             
             logger.debug("DNS leak blocking rules added")
             
@@ -218,7 +227,7 @@ class DNSProtector:
                 "--dport", "53",
                 "-j", "DROP"
             ]
-            await asyncio.create_subprocess_exec(*cmd)
+            await self._run(cmd)
             
             cmd = [
                 "iptables", "-D", "OUTPUT", "!",
@@ -227,7 +236,7 @@ class DNSProtector:
                 "--dport", "53",
                 "-j", "DROP"
             ]
-            await asyncio.create_subprocess_exec(*cmd)
+            await self._run(cmd)
             
             # Remove IPv6 rules
             cmd = [
@@ -237,7 +246,7 @@ class DNSProtector:
                 "--dport", "53",
                 "-j", "DROP"
             ]
-            await asyncio.create_subprocess_exec(*cmd)
+            await self._run(cmd)
             
             cmd = [
                 "ip6tables", "-D", "OUTPUT", "!",
@@ -246,7 +255,7 @@ class DNSProtector:
                 "--dport", "53",
                 "-j", "DROP"
             ]
-            await asyncio.create_subprocess_exec(*cmd)
+            await self._run(cmd)
             
         except Exception as e:
             logger.debug(f"Failed to remove DNS blocking rules: {e}")

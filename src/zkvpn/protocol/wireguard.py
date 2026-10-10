@@ -8,7 +8,7 @@ import asyncio
 import subprocess
 import re
 import ipaddress
-from typing import Optional, Dict, List, Tuple
+from typing import Any, Optional, Dict, List, Tuple
 from dataclasses import dataclass
 import logging
 import secrets
@@ -20,6 +20,26 @@ from zkvpn.core.config import settings
 from zkvpn.core.memory import memory_guard, key_store
 
 logger = logging.getLogger(__name__)
+
+
+_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
+
+
+def validate_public_key(key: str) -> str:
+    """Ensure ``key`` is a base64-encoded 32-byte WireGuard key."""
+    if not isinstance(key, str) or not _KEY_RE.match(key):
+        raise ValueError("Invalid WireGuard key (expected 44-char base64)")
+    return key
+
+
+def validate_endpoint(endpoint: str) -> str:
+    """Ensure ``endpoint`` is ``host:port`` / ``[ipv6]:port`` with a valid port."""
+    host, sep, port = endpoint.rpartition(":")
+    host = host.strip("[]")
+    if not sep or not host or host.startswith("-") or not port.isdigit() \
+            or not 1 <= int(port) <= 65535:
+        raise ValueError(f"Invalid endpoint: {endpoint!r}")
+    return endpoint
 
 
 @dataclass
@@ -37,6 +57,11 @@ class WireGuardPeer:
     def __post_init__(self):
         if self.allowed_ips is None:
             self.allowed_ips = ["0.0.0.0/0", "::/0"]
+        validate_public_key(self.public_key)
+        for ip in self.allowed_ips:
+            ipaddress.ip_network(ip, strict=False)
+        if self.endpoint is not None:
+            validate_endpoint(self.endpoint)
 
 
 class WireGuardInterface:
@@ -263,7 +288,7 @@ class WireGuardInterface:
             logger.error(f"Failed to remove peer: {e.stderr}")
             return False
     
-    async def get_status(self) -> Dict[str, any]:
+    async def get_status(self) -> Dict[str, Any]:
         """Get WireGuard interface status.
         
         Returns:

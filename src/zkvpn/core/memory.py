@@ -12,7 +12,8 @@ import logging
 from typing import Dict, Any, Optional, TypeVar, Generic, Callable
 from dataclasses import dataclass, field
 from collections import OrderedDict
-from contextlib import contextmanager
+import functools
+import inspect
 from datetime import datetime, timedelta
 import secrets
 
@@ -404,25 +405,46 @@ key_store = SecureMemoryStore(
 )
 
 
-@contextmanager
-def memory_guard(operation: str):
-    """Context manager for memory-safe operations.
-    
+class memory_guard:
+    """Memory-safe operation guard, usable as context manager or decorator.
+
+    Works on sync and async functions: for coroutines the guard stays active
+    until the coroutine has completed (a plain ``contextmanager`` decorator
+    would exit as soon as the coroutine object is created).
+
     Args:
         operation: Name of operation for logging
-    
-    Yields:
-        None
     """
-    try:
-        yield
-    except MemoryError:
-        logger.error(f"Memory error during {operation}, forcing cleanup")
-        proof_store._evict_lru()
-        raise
-    except Exception as e:
-        logger.error(f"Error during {operation}: {e}")
-        raise
+
+    def __init__(self, operation: str):
+        self.operation = operation
+
+    def __enter__(self):
+        return None
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            return False
+        if issubclass(exc_type, MemoryError):
+            logger.error(f"Memory error during {self.operation}, forcing cleanup")
+            proof_store._evict_lru()
+        else:
+            logger.error(f"Error during {self.operation}: {exc}")
+        return False
+
+    def __call__(self, func):
+        if inspect.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                with self:
+                    return await func(*args, **kwargs)
+            return async_wrapper
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            with self:
+                return func(*args, **kwargs)
+        return wrapper
 
 
 __all__ = [

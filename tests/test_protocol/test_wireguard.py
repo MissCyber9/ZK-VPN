@@ -8,6 +8,11 @@ from zkvpn.protocol.wireguard import WireGuardInterface, WireGuardPeer, wg_inter
 from zkvpn.protocol.tunnel import ZKTunnel, tunnel
 from zkvpn.protocol.dns import DNSProtector, dns_protector
 
+# Valid 44-char base64 WireGuard-style keys
+PUB1 = "A" * 43 + "="
+PUB2 = "B" * 43 + "="
+PUB3 = "C" * 43 + "="
+
 
 @pytest.mark.asyncio
 class TestWireGuardInterface:
@@ -42,9 +47,11 @@ class TestWireGuardInterface:
         
         wg = WireGuardInterface("test0")
         
-        with patch.object(wg, 'generate_keypair') as mock_gen:
-            mock_gen.return_value = ("priv", "pub")
-            
+        def fake_keypair():
+            wg.private_key, wg.public_key = "priv", "pub"
+            return "priv", "pub"
+
+        with patch.object(wg, 'generate_keypair', side_effect=fake_keypair):
             result = await wg.configure_interface()
             
             assert result is True
@@ -57,7 +64,7 @@ class TestWireGuardInterface:
         
         wg = WireGuardInterface("test0")
         peer = WireGuardPeer(
-            public_key="test_pubkey",
+            public_key=PUB1,
             endpoint="10.0.0.2:51820",
             allowed_ips=["10.0.0.2/32"]
         )
@@ -65,7 +72,7 @@ class TestWireGuardInterface:
         result = await wg.add_peer(peer)
         
         assert result is True
-        assert "test_pubkey" in wg.peers
+        assert PUB1 in wg.peers
     
     @patch('subprocess.run')
     async def test_get_status(self, mock_run):
@@ -149,7 +156,7 @@ class TestZKTunnel:
         
         tunnel = ZKTunnel()
         
-        result = await tunnel.connect("10.0.0.1:51820", "server_pubkey")
+        result = await tunnel.connect("10.0.0.1:51820", PUB2)
         
         assert result is True
         assert tunnel._is_connected is True
@@ -180,7 +187,7 @@ class TestZKTunnel:
         with patch.object(tunnel, '_assign_client_ip') as mock_assign:
             mock_assign.return_value = "10.0.0.10"
             
-            result = await tunnel.add_client("client_pubkey")
+            result = await tunnel.add_client(PUB3)
             
             assert result is True
 
@@ -234,3 +241,38 @@ class TestDNSProtector:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--asyncio-mode=auto"])
+
+
+class TestInputValidation:
+    """Peer inputs are validated before reaching `wg set`."""
+
+    def test_rejects_option_like_key(self):
+        with pytest.raises(ValueError):
+            WireGuardPeer(public_key="--help")
+
+    def test_rejects_bad_endpoint(self):
+        with pytest.raises(ValueError):
+            WireGuardPeer(public_key=PUB1, endpoint="-evil:51820")
+        with pytest.raises(ValueError):
+            WireGuardPeer(public_key=PUB1, endpoint="1.2.3.4:99999")
+
+    def test_rejects_bad_allowed_ips(self):
+        with pytest.raises(ValueError):
+            WireGuardPeer(public_key=PUB1, allowed_ips=["not-an-ip"])
+
+    def test_accepts_valid_peer(self):
+        WireGuardPeer(public_key=PUB1, endpoint="[::1]:51820", allowed_ips=["10.0.0.2/32"])
+
+
+async def test_memory_guard_covers_async_body():
+    """memory_guard must stay active until the coroutine finishes."""
+    from zkvpn.core.memory import memory_guard
+
+    @memory_guard("t")
+    async def boom():
+        await asyncio.sleep(0)
+        raise MemoryError
+
+    assert asyncio.iscoroutinefunction(boom)
+    with pytest.raises(MemoryError):
+        await boom()
