@@ -54,7 +54,7 @@ def _have_wireguard() -> bool:
 
 
 def _can_netns() -> bool:
-    if os.geteuid() != 0 or not shutil.which("ip"):
+    if not hasattr(os, "geteuid") or os.geteuid() != 0 or not shutil.which("ip"):
         return False
     r = subprocess.run(["ip", "netns", "add", "zkprobe"], capture_output=True)
     subprocess.run(["ip", "netns", "del", "zkprobe"], capture_output=True)
