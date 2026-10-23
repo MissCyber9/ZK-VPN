@@ -80,6 +80,14 @@ jobs:
       - name: Installer, service and end-to-end on ${{ matrix.image }}
         run: tests/distro/run.sh ${{ matrix.image }} --e2e
 
+  docker:
+    # The published image: no secret inside, server starts with the given key, a client container
+    # connects through the tunnel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/docker/smoke.sh
+
   ceremony:
     name: ceremony (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
