@@ -13,6 +13,7 @@ import shutil
 import socket
 import sys
 import time
+import uuid
 
 import pytest
 
@@ -35,7 +36,9 @@ PORT_A, PORT_B = 51831, 51832
 async def pair(tmp_path, monkeypatch):
     from zkvpn.core.config import settings
     monkeypatch.setattr(settings, "state_dir", str(tmp_path / "state"))
-    a, b = backend.make_interface("zkvpn-a"), backend.make_interface("zkvpn-b")
+    # unique names: a Windows service deleted by the previous test may still be "marked for deletion"
+    tag = uuid.uuid4().hex[:4]
+    a, b = backend.make_interface(f"zkvpn-a{tag}"), backend.make_interface(f"zkvpn-b{tag}")
     a.listen_port, b.listen_port = PORT_A, PORT_B
     try:
         assert await a.configure_interface() is True

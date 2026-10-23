@@ -52,11 +52,12 @@ PRIV="$(docker run --rm --entrypoint wg "$IMAGE" genkey)"
 docker run -d --name "$SERVER" --network "$NET" --cap-add NET_ADMIN --device /dev/net/tun \
     --sysctl net.ipv4.ip_forward=1 -e ZKVPN_PRIVATE_KEY="$PRIV" "$IMAGE" >/dev/null
 for _ in $(seq 60); do
-    docker logs "$SERVER" 2>&1 | grep -q "Server WireGuard public key" && break
+    docker logs "$SERVER" 2>&1 | grep -qE '[A-Za-z0-9+/]{43}=' && break
     [[ "$(docker inspect -f '{{.State.Running}}' "$SERVER")" == true ]] || { docker logs "$SERVER"; echo "FAIL: server stopped"; exit 1; }
     sleep 1
 done
-PUB="$(docker logs "$SERVER" 2>&1 | grep "Server WireGuard public key" | sed 's/.*: //' | tr -d '[:space:]')"
+# the key may be wrapped onto its own line by the console
+PUB="$(docker logs "$SERVER" 2>&1 | grep -oE '[A-Za-z0-9+/]{43}=' | head -1)"
 [[ "$PUB" == "$(echo "$PRIV" | docker run --rm -i --entrypoint wg "$IMAGE" pubkey)" ]] \
     || { echo "FAIL: the server does not use the configured key"; exit 1; }
 echo "server up, public key $PUB"
