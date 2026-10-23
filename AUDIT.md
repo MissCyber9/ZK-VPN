@@ -122,3 +122,8 @@ Les tests ont été validés par **mutation** : supprimer l'isolation, le blocag
 - **Vérifié** : Linux de bout en bout ; macOS et Windows : tests unitaires, vrai WireGuard (interface, clés, pair, handshake) sur runners CI.
 - **Non vérifié** : application réelle des routes, du pare-feu et du DNS sur macOS/Windows (le faire sur un runner CI le couperait du réseau) ; rôle serveur hors Linux/Docker (non pris en charge).
 - Dépôt public : historique réécrit pour retirer toute adresse e-mail personnelle, chemin de machine et lien de session ; tests de garde (`tests/test_repo_hygiene.py`) et gitleaks en CI. Restes hors de portée du dépôt : anciens runs CI affichant d'anciennes métadonnées (à supprimer dans l'interface Actions), SHA anciens éventuellement conservés par GitHub (support GitHub), adresse publique pendant plusieurs mois.
+
+## Résultat CI (branche `claude/vigilant-brown-ro8koy`, commit 195c2c4)
+Les 16 jobs passent : unitaires (Linux 3.9/3.13, macOS, Windows 3.9/3.13), e2e Linux en namespaces, installeur + service systemd réel sur Ubuntu 24.04 / Debian 12 / Fedora 41, image Docker (build, aucun secret, serveur démarré avec la clé fournie, client conteneur joignant le serveur par le tunnel), cérémonie multipartite sur les trois systèmes, WireGuard réel sur macOS et Windows, gitleaks sur tout l'historique.
+
+Défauts trouvés par la CI Windows et corrigés : circom2 ne gérait pas les chemins de sortie (compilation depuis la racine de l'espace de travail), `restrict_to_owner` laissait subsister une entrée ACL explicite « Everyone » (corrigé avec `icacls /reset`, test de non-régression), sortie console cp1252.
