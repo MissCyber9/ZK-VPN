@@ -6,7 +6,7 @@ identité, pour un challenge du serveur lié à sa clé WireGuard, sans la rév�
 
 > ⚠️ **Statut : prototype non audité.** Les clés de preuve produites par `zkvpn zk setup` viennent
 > d'un setup **mono-partie** (développement). Ce projet **ne prouve pas** l'absence de logs :
-> aucune preuve ZK ne le peut. Voir [AUDIT.md](AUDIT.md) et [SECURITY.md](SECURITY.md).
+> aucune preuve ZK ne le peut. Voir [docs/AUDIT.md](docs/AUDIT.md) et [SECURITY.md](SECURITY.md).
 
 ## Systèmes pris en charge
 
