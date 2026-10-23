@@ -103,9 +103,9 @@ def compile_circuit(zk_dir: Path, out_dir: Path) -> Path:
     ``out_dir`` must be inside the workspace (see :func:`workdir`).
     """
     zk_dir, out_dir = Path(zk_dir).resolve(), Path(out_dir).resolve()
-    src_dir = zk_dir / "circuits"
-    src_dir.mkdir(exist_ok=True)
-    shutil.copyfile(CIRCUIT, src_dir / CIRCUIT.name)
+    # The circuit sits in the workspace root: on Windows circom2 mangles the path of an input in
+    # a sub-directory ("./circuits\\x.r1cs") and then fails writing the wasm.
+    shutil.copyfile(CIRCUIT, zk_dir / CIRCUIT.name)
     out_dir.mkdir(parents=True, exist_ok=True)
     # No "-o": circom2's sandbox cannot write to an explicit output path on Windows, so it
     # writes into its working directory and the results are moved to out_dir afterwards.
@@ -115,7 +115,7 @@ def compile_circuit(zk_dir: Path, out_dir: Path) -> Path:
             shutil.rmtree(leftover)
         elif leftover.exists():
             leftover.unlink()
-    _run(_js_bin(zk_dir, "circom2") + [f"circuits/{CIRCUIT.name}", "--r1cs", "--wasm", "-l", "node_modules"],
+    _run(_js_bin(zk_dir, "circom2") + [CIRCUIT.name, "--r1cs", "--wasm", "-l", "node_modules"],
          cwd=zk_dir)
     for produced in (zk_dir / f"{stem}.r1cs", zk_dir / f"{stem}_js"):
         target = out_dir / produced.name

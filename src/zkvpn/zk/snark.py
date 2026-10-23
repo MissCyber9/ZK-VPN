@@ -37,7 +37,7 @@ class SnarkBackend:
     async def _run(self, script: str, payload: Dict[str, Any]) -> bytes:
         if not self.available:
             raise SnarkError(
-                f"ZK artifacts missing in {self.zk_dir}; run scripts/setup_circuits.sh"
+                f"ZK artifacts missing in {self.zk_dir}; run `zkvpn zk setup`"
             )
         proc = await asyncio.create_subprocess_exec(
             "node", str(self.zk_dir / script),
