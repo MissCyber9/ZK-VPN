@@ -19,6 +19,15 @@ from zkvpn.platform.process import wait_for_shutdown
 ON_WINDOWS = sys.platform == "win32"
 
 
+def acl_report(path):
+    """Diagnostics for a failed ownership assertion (Windows ACL dump; empty elsewhere)."""
+    if not ON_WINDOWS:
+        return ""
+    who = subprocess.run(["whoami"], capture_output=True, text=True).stdout.strip()
+    acl = subprocess.run(["icacls", str(path)], capture_output=True, text=True).stdout
+    return f"whoami={who!r}\n{acl}"
+
+
 def make_world_readable(path):
     """Give everybody access, the way a careless user would."""
     if ON_WINDOWS:
@@ -84,7 +93,7 @@ class TestPrivateFiles:
         f = tmp_path / "secret"
         fsperm.write_private_file(f, "s3cret\n")
         assert f.read_text() == "s3cret\n"
-        assert fsperm.is_private(f)
+        assert fsperm.is_private(f), acl_report(f)
 
     def test_world_readable_file_is_detected(self, tmp_path):
         f = tmp_path / "secret"
@@ -92,7 +101,7 @@ class TestPrivateFiles:
         make_world_readable(f)
         assert not fsperm.is_private(f)
         fsperm.restrict_to_owner(f)
-        assert fsperm.is_private(f)
+        assert fsperm.is_private(f), acl_report(f)
 
     def test_exclusive_never_overwrites(self, tmp_path):
         f = tmp_path / "id"
@@ -110,7 +119,8 @@ class TestPrivateFiles:
         f = tmp_path / ".env"
         fsperm.replace_private_file(f, "A=1\n")
         fsperm.replace_private_file(f, "A=2\n")
-        assert f.read_text() == "A=2\n" and fsperm.is_private(f)
+        assert f.read_text() == "A=2\n"
+        assert fsperm.is_private(f), acl_report(f)
         assert not (tmp_path / ".env.tmp").exists()
 
     def test_private_directory(self, tmp_path):
