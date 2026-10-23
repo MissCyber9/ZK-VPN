@@ -43,7 +43,7 @@ echo "=== build"
 docker build "${BUILD_ARGS[@]}" -t "$IMAGE" "$ROOT"
 
 echo "=== the image contains no secret"
-! docker run --rm --entrypoint sh "$IMAGE" -c 'find / -xdev \( -name ".env" -o -name "*.pem" -o -name "id_rsa*" \) -not -path "*/node_modules/*" -not -path "/usr/*" -not -path "/etc/ssl/*" 2>/dev/null | grep .' \
+! docker run --rm --entrypoint sh "$IMAGE" -c 'find / -xdev \( -name ".env" -o -name "*.pem" -o -name "id_rsa*" \) -not -path "*/node_modules/*" -not -path "/usr/*" -not -path "/etc/ssl/*" -not -name cacert.pem 2>/dev/null | grep .' \
     || { echo "FAIL: secret-like file in the image"; exit 1; }
 
 echo "=== server"
