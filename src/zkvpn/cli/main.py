@@ -8,38 +8,66 @@ import asyncio
 import sys
 import os
 import functools
+import inspect
 from pathlib import Path
 
 import click
 from dotenv import load_dotenv
 
+# Windows consoles default to a legacy code page that cannot print the ✓/✗ marks (and fail
+# outright when output is redirected): make the output streams UTF-8 everywhere.
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
 # Load environment variables
-env_file = Path("/etc/zkvpn/.env")
-if env_file.exists():
-    load_dotenv(env_file)
-else:
-    load_dotenv()  # Try local .env
+from zkvpn.platform import paths as platform_paths
+
+env_file = platform_paths.env_file()
+try:
+    if env_file.exists():
+        load_dotenv(env_file)
+    else:
+        load_dotenv()  # Try local .env
+except PermissionError:
+    # Root-only secrets file: under systemd the unit's EnvironmentFile already provides it
+    pass
 
 from zkvpn.cli.commands import (
-    connect, disconnect, status, proofs, config,
+    connect, disconnect, serve, status, identity, config,
     peer, test, version, help
 )
+from zkvpn.cli.zk_commands import doctor, zk
 from zkvpn.cli.utils import console, print_error
 
 
-def async_command(func):
-    """Decorator to run async commands synchronously."""
-    @functools.wraps(func)
+def _run_sync(callback):
+    """Wrap a coroutine function so click can call it synchronously."""
+    @functools.wraps(callback)
     def wrapper(*args, **kwargs):
         try:
-            return asyncio.run(func(*args, **kwargs))
+            return asyncio.run(callback(*args, **kwargs))
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted by user[/yellow]")
-            return 130
+            raise SystemExit(130)
+        except (click.ClickException, click.exceptions.Exit, SystemExit):
+            raise
         except Exception as e:
             print_error(f"Command failed: {e}")
-            return 1
+            raise SystemExit(1)
     return wrapper
+
+
+def async_command(cmd):
+    """Make every coroutine callback of a click command (or group tree) synchronous."""
+    if inspect.iscoroutinefunction(cmd.callback):
+        cmd.callback = _run_sync(cmd.callback)
+    for sub in getattr(cmd, "commands", {}).values():
+        async_command(sub)
+    return cmd
 
 
 @click.group()
@@ -48,9 +76,9 @@ def async_command(func):
 def cli(debug):
     """ZK-VPN - Zero-Knowledge VPN with privacy guarantees.
     
-    A lightweight VPN that uses zero-knowledge proofs to ensure
-    no logs are kept. All proofs are generated and verified in RAM,
-    never written to disk.
+    A WireGuard-based VPN prototype that authenticates clients with
+    zero-knowledge (Groth16) session proofs. It does not, and cannot,
+    prove that a server keeps no logs.
     """
     if debug:
         import logging
@@ -61,11 +89,14 @@ def cli(debug):
 # Add commands with async wrapper
 cli.add_command(async_command(connect))
 cli.add_command(async_command(disconnect))
+cli.add_command(async_command(serve))
 cli.add_command(async_command(status))
-cli.add_command(proofs)  # Group commands don't need async wrapper
-cli.add_command(config)   # Group commands don't need async wrapper
-cli.add_command(peer)     # Group commands don't need async wrapper
-cli.add_command(test)     # Group commands don't need async wrapper
+cli.add_command(async_command(identity))
+cli.add_command(async_command(config))
+cli.add_command(async_command(peer))
+cli.add_command(async_command(test))
+cli.add_command(async_command(zk))
+cli.add_command(doctor)
 cli.add_command(version)
 cli.add_command(help)
 

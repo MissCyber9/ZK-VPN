@@ -8,18 +8,104 @@ import asyncio
 import subprocess
 import re
 import ipaddress
-from typing import Optional, Dict, List, Tuple
+from typing import Any, Optional, Dict, List, Tuple
 from dataclasses import dataclass
 import logging
-import secrets
-import tempfile
-import os
-from pathlib import Path
+import shutil
 
 from zkvpn.core.config import settings
 from zkvpn.core.memory import memory_guard, key_store
 
 logger = logging.getLogger(__name__)
+
+
+_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
+
+
+def validate_public_key(key: str) -> str:
+    """Ensure ``key`` is a base64-encoded 32-byte WireGuard key."""
+    if not isinstance(key, str) or not _KEY_RE.match(key):
+        raise ValueError("Invalid WireGuard key (expected 44-char base64)")
+    return key
+
+
+def validate_endpoint(endpoint: str) -> str:
+    """Ensure ``endpoint`` is ``host:port`` / ``[ipv6]:port`` with a valid port."""
+    host, sep, port = endpoint.rpartition(":")
+    host = host.strip("[]")
+    if not sep or not host or host.startswith("-") or not port.isdigit() \
+            or not 1 <= int(port) <= 65535:
+        raise ValueError(f"Invalid endpoint: {endpoint!r}")
+    return endpoint
+
+
+def _stderr_text(e) -> str:
+    """Readable one-line reason from a failed subprocess.
+
+    wireguard-go prints a long banner and reports its error on stdout, so both
+    streams are searched.
+    """
+    parts = []
+    for stream in (getattr(e, "stderr", None), getattr(e, "stdout", None)):
+        if isinstance(stream, bytes):
+            stream = stream.decode(errors="replace")
+        parts.append(stream or "")
+    lines = [ln.strip() for ln in "\n".join(parts).splitlines() if ln.strip()]
+    errors = [ln for ln in lines if "ERROR" in ln or "rror:" in ln]
+    boxes = set("┌┐└┘│─ ")
+    plain = [ln for ln in lines if not set(ln) <= boxes and not ln.startswith("│")]
+    return (errors or plain or lines or ["no output"])[-1]
+
+
+_UNITS = {"B": 1, "KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3, "TiB": 1024 ** 4}
+_TRANSFER_RE = re.compile(
+    r"([\d.]+)\s*([KMGT]?i?B)\s+received,\s*([\d.]+)\s*([KMGT]?i?B)\s+sent")
+
+
+def parse_transfer(value: str, unit: str) -> int:
+    """Convert a ``wg show`` quantity ("1.23", "KiB") to bytes."""
+    return int(float(value) * _UNITS.get(unit, 1))
+
+
+def parse_wg_show(output: str, interface: str = "") -> Dict[str, Any]:
+    """Parse ``wg show <iface>`` output.
+
+    Fields are matched on their stripped ``key: value`` form, so indentation
+    does not matter and values containing ``:`` (IPv6 endpoints) stay intact.
+    """
+    status: Dict[str, Any] = {
+        "interface": interface, "public_key": None, "listen_port": None, "peers": []
+    }
+    peer = None
+    for raw in output.splitlines():
+        key, sep, value = raw.strip().partition(":")
+        if not sep:
+            continue
+        value = value.strip()
+        if key == "interface":
+            status["interface"] = value
+        elif key == "peer":
+            peer = {"public_key": value, "endpoint": None, "allowed_ips": [],
+                    "latest_handshake": None, "transfer": {"rx": 0, "tx": 0}}
+            status["peers"].append(peer)
+        elif peer is None:
+            if key == "public key":
+                status["public_key"] = value
+            elif key == "listening port" and value.isdigit():
+                status["listen_port"] = int(value)
+        elif key == "endpoint":
+            peer["endpoint"] = value
+        elif key == "allowed ips":
+            peer["allowed_ips"] = [] if value == "(none)" else [
+                ip.strip() for ip in value.split(",")]
+        elif key == "latest handshake":
+            peer["latest_handshake"] = value
+        elif key == "transfer":
+            m = _TRANSFER_RE.search(value)
+            if m:
+                peer["transfer"]["rx"] = parse_transfer(m.group(1), m.group(2))
+                peer["transfer"]["tx"] = parse_transfer(m.group(3), m.group(4))
+    return status
 
 
 @dataclass
@@ -37,6 +123,11 @@ class WireGuardPeer:
     def __post_init__(self):
         if self.allowed_ips is None:
             self.allowed_ips = ["0.0.0.0/0", "::/0"]
+        validate_public_key(self.public_key)
+        for ip in self.allowed_ips:
+            ipaddress.ip_network(ip, strict=False)
+        if self.endpoint is not None:
+            validate_endpoint(self.endpoint)
 
 
 class WireGuardInterface:
@@ -98,7 +189,7 @@ class WireGuardInterface:
         except subprocess.TimeoutExpired:
             raise RuntimeError("WireGuard key generation timeout")
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"WireGuard key generation failed: {e.stderr}")
+            raise RuntimeError(f"WireGuard key generation failed: {_stderr_text(e)}")
         except FileNotFoundError:
             raise RuntimeError("WireGuard (wg) not installed. Please install wireguard-tools.")
     
@@ -112,78 +203,33 @@ class WireGuardInterface:
         Returns:
             bool: True if successful
         """
-        # Use provided key or generate new one
+        # Use the provided key, else generate a fresh one. The configured server key
+        # (ZKVPN_PRIVATE_KEY) is passed explicitly by the server only: a client on a
+        # machine that also holds a server config must never inherit that key (WireGuard
+        # silently ignores a peer that carries the interface's own public key).
         if private_key:
             self.private_key = private_key
             # Generate public key from private key
             try:
-                self.public_key = subprocess.run(
+                completed = await asyncio.to_thread(
+                    subprocess.run,
                     ["wg", "pubkey"],
                     input=self.private_key,
                     capture_output=True,
                     text=True,
                     check=True,
                     timeout=5
-                ).stdout.strip()
+                )
+                self.public_key = completed.stdout.strip()
             except subprocess.CalledProcessError as e:
-                raise RuntimeError(f"Invalid private key: {e.stderr}")
+                raise RuntimeError(f"Invalid private key: {_stderr_text(e)}")
         else:
             self.generate_keypair()
         
-        # Create interface if it doesn't exist
         try:
-            # Check if interface exists
-            result = subprocess.run(
-                ["ip", "link", "show", self.interface],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if result.returncode != 0:
-                # Create interface
-                subprocess.run(
-                    ["ip", "link", "add", self.interface, "type", "wireguard"],
-                    check=True,
-                    capture_output=True,
-                    timeout=5
-                )
-                logger.info(f"Created interface {self.interface}")
-            
-            # Configure WireGuard
-            config_cmd = [
-                "wg", "set", self.interface,
-                "private-key", "/dev/stdin",  # Read from stdin (no disk write)
-                "listen-port", str(self.listen_port)
-            ]
-            
-            proc = await asyncio.create_subprocess_exec(
-                *config_cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await proc.communicate(input=self.private_key.encode())
-            
-            if proc.returncode != 0:
-                raise RuntimeError(f"Failed to configure WireGuard: {stderr.decode()}")
-            
-            # Bring interface up
-            subprocess.run(
-                ["ip", "link", "set", self.interface, "up"],
-                check=True,
-                capture_output=True,
-                timeout=5
-            )
-            
-            # Assign IP address
-            subprocess.run(
-                ["ip", "addr", "add", self.address, "dev", self.interface],
-                capture_output=True,
-                timeout=5
-            )  # Don't check return code - address might already exist
-            
+            await self._create_link()
+            await self._apply_settings()
+
             self._initialized = True
             logger.info(f"WireGuard interface {self.interface} configured successfully")
             return True
@@ -191,11 +237,112 @@ class WireGuardInterface:
         except subprocess.TimeoutExpired:
             raise RuntimeError("WireGuard configuration timeout")
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"WireGuard configuration failed: {e.stderr}")
+            raise RuntimeError(f"WireGuard configuration failed: {_stderr_text(e)}")
         except Exception as e:
             logger.error(f"Failed to configure WireGuard: {e}")
             return False
     
+    # ------------------------------------------------------------------
+    # Operating-system hooks. This implementation is Linux (kernel module, or
+    # wireguard-go as fallback); macOS and Windows override them
+    # (see zkvpn.platform.net).
+    # ------------------------------------------------------------------
+    async def _create_link(self) -> None:
+        """Create the WireGuard network interface if it does not exist yet."""
+        result = await asyncio.to_thread(subprocess.run,
+            ["ip", "link", "show", self.interface],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            return
+        # kernel module first, wireguard-go (userspace) as fallback
+        kernel = await asyncio.to_thread(subprocess.run,
+            ["ip", "link", "add", self.interface, "type", "wireguard"],
+            capture_output=True,
+            timeout=5
+        )
+        if kernel.returncode == 0:
+            logger.info(f"Created kernel interface {self.interface}")
+            return
+        userspace = shutil.which("wireguard-go")
+        if not userspace:
+            raise RuntimeError("Kernel WireGuard unavailable and wireguard-go not installed")
+        await asyncio.to_thread(subprocess.run,
+            [userspace, self.interface],
+            check=True,
+            capture_output=True,
+            timeout=15
+        )
+        logger.info(f"Created userspace interface {self.interface} (wireguard-go)")
+
+    async def _apply_settings(self) -> None:
+        """Load the private key and listen port, then bring the link up."""
+        await self._load_key()
+        await self._activate()
+
+    async def _load_key(self) -> None:
+        """Load the private key and listen port into the running interface (``wg set``)."""
+        config_cmd = [
+            "wg", "set", self.interface,
+            "private-key", "/dev/stdin",  # Read from stdin (no disk write)
+            "listen-port", str(self.listen_port)
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *config_cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate(input=self.private_key.encode())
+        if proc.returncode != 0:
+            raise RuntimeError(f"Failed to configure WireGuard: {stderr.decode()}")
+
+    async def _activate(self) -> None:
+        """Bring the link up and give it its initial address."""
+        await asyncio.to_thread(subprocess.run,
+            ["ip", "link", "set", self.interface, "up"],
+            check=True,
+            capture_output=True,
+            timeout=5
+        )
+        await asyncio.to_thread(subprocess.run,
+            ["ip", "addr", "add", self.address, "dev", self.interface],
+            capture_output=True,
+            timeout=5
+        )  # Don't check return code - address might already exist
+
+    async def bring_up(self) -> None:
+        """Make sure the link is up (idempotent)."""
+        await asyncio.to_thread(subprocess.run,
+            ["ip", "link", "set", self.interface, "up"],
+            capture_output=True,
+            timeout=5
+        )
+
+    async def _assign_address(self, address: str) -> None:
+        """Replace the interface addresses by ``address`` (CIDR)."""
+        await asyncio.to_thread(subprocess.run,
+            ["ip", "addr", "flush", "dev", self.interface],
+            capture_output=True,
+            timeout=5
+        )
+        await asyncio.to_thread(subprocess.run,
+            ["ip", "addr", "add", address, "dev", self.interface],
+            check=True,
+            capture_output=True,
+            timeout=5
+        )
+
+    async def _remove_link(self) -> None:
+        await asyncio.to_thread(subprocess.run,
+            ["ip", "link", "delete", self.interface],
+            check=True,
+            capture_output=True,
+            timeout=5
+        )
+
     @memory_guard("wireguard_add_peer")
     async def add_peer(self, peer: WireGuardPeer) -> bool:
         """Add or update a peer.
@@ -221,7 +368,7 @@ class WireGuardInterface:
             if peer.endpoint:
                 cmd.extend(["endpoint", peer.endpoint])
             
-            subprocess.run(cmd, check=True, capture_output=True, timeout=5)
+            await asyncio.to_thread(subprocess.run, cmd, check=True, capture_output=True, timeout=5)
             
             # Store in memory
             self.peers[peer.public_key] = peer
@@ -233,7 +380,7 @@ class WireGuardInterface:
         except subprocess.TimeoutExpired:
             raise RuntimeError("WireGuard add peer timeout")
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to add peer: {e.stderr}")
+            raise RuntimeError(f"Failed to add peer: {_stderr_text(e)}")
     
     @memory_guard("wireguard_remove_peer")
     async def remove_peer(self, public_key: str) -> bool:
@@ -246,7 +393,7 @@ class WireGuardInterface:
             bool: True if successful
         """
         try:
-            subprocess.run(
+            await asyncio.to_thread(subprocess.run,
                 ["wg", "set", self.interface, "peer", public_key, "remove"],
                 check=True,
                 capture_output=True,
@@ -260,17 +407,17 @@ class WireGuardInterface:
             return True
             
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to remove peer: {e.stderr}")
+            logger.error(f"Failed to remove peer: {_stderr_text(e)}")
             return False
     
-    async def get_status(self) -> Dict[str, any]:
+    async def get_status(self) -> Dict[str, Any]:
         """Get WireGuard interface status.
         
         Returns:
             Dict: Interface and peers status
         """
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(subprocess.run,
                 ["wg", "show", self.interface],
                 capture_output=True,
                 text=True,
@@ -280,48 +427,7 @@ class WireGuardInterface:
             if result.returncode != 0:
                 return {"error": "Interface not found"}
             
-            # Parse wg show output
-            status = {
-                "interface": self.interface,
-                "public_key": None,
-                "listen_port": None,
-                "peers": []
-            }
-            
-            current_peer = None
-            
-            for line in result.stdout.split('\n'):
-                if line.startswith('interface:'):
-                    pass  # Already have interface name
-                elif line.startswith('  public key:'):
-                    status['public_key'] = line.split(':')[1].strip()
-                elif line.startswith('  listening port:'):
-                    status['listen_port'] = int(line.split(':')[1].strip())
-                elif line.startswith('peer:'):
-                    current_peer = {
-                        'public_key': line.split(':')[1].strip(),
-                        'endpoint': None,
-                        'allowed_ips': [],
-                        'latest_handshake': None,
-                        'transfer': {'rx': 0, 'tx': 0}
-                    }
-                    status['peers'].append(current_peer)
-                elif current_peer and line.startswith('    endpoint:'):
-                    current_peer['endpoint'] = line.split(':')[1].strip()
-                elif current_peer and line.startswith('    allowed ips:'):
-                    ips = line.split(':')[1].strip()
-                    current_peer['allowed_ips'] = [ip.strip() for ip in ips.split(',')]
-                elif current_peer and line.startswith('    latest handshake:'):
-                    hs = line.split(':')[1].strip()
-                    current_peer['latest_handshake'] = hs
-                elif current_peer and line.startswith('    transfer:'):
-                    # Parse "1.23 KiB received, 4.56 KiB sent"
-                    match = re.search(r'([\d.]+)\s*([KMG]iB)?\s*received,\s*([\d.]+)\s*([KMG]iB)?\s*sent', line)
-                    if match:
-                        rx_val, rx_unit, tx_val, tx_unit = match.groups()
-                        current_peer['transfer']['rx'] = self._parse_transfer(rx_val, rx_unit)
-                        current_peer['transfer']['tx'] = self._parse_transfer(tx_val, tx_unit)
-            
+            status = parse_wg_show(result.stdout, self.interface)
             return status
             
         except subprocess.TimeoutExpired:
@@ -329,18 +435,6 @@ class WireGuardInterface:
         except Exception as e:
             logger.error(f"Failed to get status: {e}")
             return {"error": str(e)}
-    
-    def _parse_transfer(self, value: str, unit: Optional[str]) -> int:
-        """Parse transfer value to bytes."""
-        val = float(value)
-        if unit == 'KiB':
-            return int(val * 1024)
-        elif unit == 'MiB':
-            return int(val * 1024 * 1024)
-        elif unit == 'GiB':
-            return int(val * 1024 * 1024 * 1024)
-        else:
-            return int(val)
     
     async def set_address(self, address: str) -> bool:
         """Set interface IP address.
@@ -352,27 +446,14 @@ class WireGuardInterface:
             bool: True if successful
         """
         try:
-            # Remove existing addresses
-            subprocess.run(
-                ["ip", "addr", "flush", "dev", self.interface],
-                capture_output=True,
-                timeout=5
-            )
-            
-            # Add new address
-            subprocess.run(
-                ["ip", "addr", "add", address, "dev", self.interface],
-                check=True,
-                capture_output=True,
-                timeout=5
-            )
-            
+            await self._assign_address(address)
+
             self.address = address
             logger.info(f"Set interface address to {address}")
             return True
             
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to set address: {e.stderr}")
+            logger.error(f"Failed to set address: {_stderr_text(e)}")
             return False
     
     async def delete_interface(self) -> bool:
@@ -382,19 +463,14 @@ class WireGuardInterface:
             bool: True if successful
         """
         try:
-            subprocess.run(
-                ["ip", "link", "delete", self.interface],
-                check=True,
-                capture_output=True,
-                timeout=5
-            )
-            
+            await self._remove_link()
+
             self._initialized = False
             logger.info(f"Deleted interface {self.interface}")
             return True
             
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to delete interface: {e.stderr}")
+            logger.error(f"Failed to delete interface: {_stderr_text(e)}")
             return False
     
     @property

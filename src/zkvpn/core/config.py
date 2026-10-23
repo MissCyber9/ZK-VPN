@@ -7,12 +7,15 @@ and never displayed in logs.
 
 import os
 import secrets
+from pathlib import Path
 import logging
 from typing import Optional, Literal, Dict, Any
 from functools import lru_cache
 
-from pydantic import Field, SecretStr, validator, ConfigDict
+from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from zkvpn.platform import paths as platform_paths
 
 # Configure module logger
 logger = logging.getLogger(__name__)
@@ -73,7 +76,7 @@ class Settings(BaseSettings):
         description="WireGuard interface name"
     )
     wireguard_config_dir: str = Field(
-        "/etc/wireguard",
+        default_factory=lambda: str(platform_paths.wireguard_config_dir()),
         description="Directory for WireGuard configuration"
     )
     private_key: Optional[SecretStr] = Field(
@@ -86,13 +89,47 @@ class Settings(BaseSettings):
     )
     
     # ============ ZK CIRCUITS ============
-    circuit_path: str = Field(
-        "./circuits",
-        description="Path to compiled ZK circuits"
+    admission_port: int = Field(
+        51821,
+        ge=1024,
+        le=65535,
+        description="TCP port of the ZK admission server"
     )
-    trusted_setup_file: Optional[str] = Field(
-        None,
-        description="Path to trusted setup parameters"
+    server_nat_enabled: bool = Field(
+        True,
+        description="Server masquerades tunnel clients and forwards their traffic (clients are isolated from each other)"
+    )
+    dns_servers: str = Field(
+        "1.1.1.1,1.0.0.1",
+        description="Comma-separated DNS servers used inside the tunnel"
+    )
+    dns_backend: Literal["auto", "resolved", "resolvconf", "file"] = Field(
+        "auto",
+        description="How the resolver is configured (auto-detected: systemd-resolved, resolvconf, or resolv.conf)"
+    )
+    state_dir: str = Field(
+        default_factory=lambda: str(platform_paths.state_dir()),
+        description="RAM-backed directory (tmpfs) holding what is needed to undo network changes across processes"
+    )
+    dns_protection_enabled: bool = Field(
+        True,
+        description="Client points DNS at the tunnel and blocks DNS outside it"
+    )
+    killswitch_enabled: bool = Field(
+        True,
+        description="Block all non-tunnel traffic while connected as a client"
+    )
+    zk_dir: str = Field(
+        default_factory=lambda: str(platform_paths.zk_dir()),
+        description="Directory with the ZK toolchain and build/ artifacts (create it with `zkvpn zk setup`)"
+    )
+    require_client_proof: bool = Field(
+        True,
+        description="Server refuses clients that do not present a valid ZK session proof"
+    )
+    authorized_identities: str = Field(
+        "",
+        description="Comma-separated ZK identities (decimal pk) allowed to connect; empty = any valid identity"
     )
     proof_generation_timeout: float = Field(
         2.0,
@@ -136,7 +173,8 @@ class Settings(BaseSettings):
         validate_default=True
     )
     
-    @validator("node_id", pre=True)
+    @field_validator("node_id", mode="before")
+    @classmethod
     def validate_node_id(cls, v: Optional[str]) -> str:
         """Ensure node_id is never empty."""
         if not v or v.strip() == "":
@@ -145,16 +183,17 @@ class Settings(BaseSettings):
             return generated
         return v.strip()
     
-    @validator("wireguard_config_dir")
+    @field_validator("wireguard_config_dir")
+    @classmethod
     def validate_config_dir(cls, v: str) -> str:
         """Validate and sanitize config directory path."""
-        # Remove any path traversal attempts
-        v = os.path.normpath(v)
-        if ".." in v:
+        # Reject traversal before normalising (normpath would collapse "..")
+        if ".." in v.replace("\\", "/").split("/"):
             raise ValueError("Path traversal detected in wireguard_config_dir")
-        return v
+        return os.path.normpath(v)
     
-    @validator("network_cidr")
+    @field_validator("network_cidr")
+    @classmethod
     def validate_cidr(cls, v: str) -> str:
         """Basic CIDR validation."""
         import ipaddress
@@ -189,17 +228,43 @@ class Settings(BaseSettings):
         """Initialize settings with secure defaults."""
         super().__init__(**kwargs)
         
-        # Auto-generate private key if not provided
-        if not self.private_key:
-            # In production, this would call wg genkey
-            # For now, generate a secure random string
-            dummy_key = secrets.token_urlsafe(32)
-            self.private_key = SecretStr(dummy_key)
-            logger.debug("Auto-generated WireGuard private key")
+        # The private key is NOT auto-generated here: WireGuardInterface
+        # generates a valid keypair with `wg genkey` when none is configured.
         
         # Log non-sensitive configuration
         safe_config = self.redact_sensitive()
         logger.debug(f"Configuration loaded: {safe_config}")
+
+
+# Settings that must come from the environment / a secret manager, never be
+# written to the .env file by the CLI.
+SECRET_SETTINGS = frozenset({"private_key"})
+
+
+def validate_setting(key: str, value: str) -> str:
+    """Validate a ``config set`` request; returns the normalised env var name.
+
+    Raises:
+        ValueError: unknown key, secret key, control characters in the value,
+            or a value that the Settings model rejects.
+    """
+    key = key.strip().lower()
+    if key not in Settings.model_fields:
+        raise ValueError(f"Unknown setting: {key!r}")
+    if key in SECRET_SETTINGS:
+        raise ValueError(
+            f"{key} is a secret: set ZKVPN_{key.upper()} in the service environment, "
+            "not through the CLI")
+    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ValueError("Value must not contain control characters or newlines")
+    try:
+        Settings(**{key: value})
+    except ValidationError as e:
+        problems = [err["msg"] for err in e.errors() if err["loc"] and err["loc"][0] == key]
+        if problems:
+            raise ValueError(f"Invalid value for {key}: {'; '.join(problems)}")
+        raise
+    return f"ZKVPN_{key.upper()}"
 
 
 @lru_cache()
@@ -216,4 +281,4 @@ def get_settings() -> Settings:
 settings = get_settings()
 
 
-__all__ = ["Settings", "settings", "get_settings"]
+__all__ = ["Settings", "settings", "get_settings", "validate_setting"]

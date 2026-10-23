@@ -1,423 +1,294 @@
 #!/usr/bin/env bash
-# ZK-VPN One-Liner Installer
-# Version: v0.1.0-rc1
-# Description: Secure, minimal, 30-second installation
-
+# ZK-VPN installer (Linux server, systemd)
+#
+# Supported distribution families (detected from /etc/os-release):
+#   debian : Debian, Ubuntu and derivatives          (apt)
+#   rhel   : Fedora, RHEL, Rocky, AlmaLinux, CentOS  (dnf)
+# Anything else: the script stops and lists what to install by hand.
+#
+# Environment overrides (mainly for tests / offline installs):
+#   ZKVPN_SOURCE_DIR  install from this local checkout instead of cloning GitHub
+#   ZKVPN_REPO / ZKVPN_BRANCH   repository (default MissCyber9/ZK-VPN) and branch (default main)
+#   ZKVPN_INSTALL_DIR / ZKVPN_CONFIG_DIR   default /opt/zkvpn and /etc/zkvpn
 set -euo pipefail
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
-# Configuration
-REPO="MissCyber9/ZK-VPN"
-BRANCH="main"
-INSTALL_DIR="/opt/zkvpn"
-CONFIG_DIR="/etc/zkvpn"
+REPO="${ZKVPN_REPO:-MissCyber9/ZK-VPN}"
+BRANCH="${ZKVPN_BRANCH:-main}"
+SOURCE_DIR="${ZKVPN_SOURCE_DIR:-}"
+INSTALL_DIR="${ZKVPN_INSTALL_DIR:-/opt/zkvpn}"
+CONFIG_DIR="${ZKVPN_CONFIG_DIR:-/etc/zkvpn}"
 VENV_DIR="${INSTALL_DIR}/venv"
-SYSTEMD_SERVICE="zkvpn"
+SERVICE_USER="zkvpn"
 LOG_FILE="/var/log/zkvpn-install.log"
+WG_PORT=51820
+ADMISSION_PORT=51821
 
-# Print with timestamp
-log() {
-    echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
-}
+mkdir -p "$(dirname "$LOG_FILE")"
+log()     { echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"; }
+error()   { echo -e "${RED}[ERROR] $1${NC}" | tee -a "$LOG_FILE"; exit 1; }
+warn()    { echo -e "${YELLOW}[WARN] $1${NC}" | tee -a "$LOG_FILE"; }
+info()    { echo -e "${BLUE}[INFO] $1${NC}" | tee -a "$LOG_FILE"; }
+success() { echo -e "${GREEN}[SUCCESS] $1${NC}" | tee -a "$LOG_FILE"; }
 
-error() {
-    echo -e "${RED}[ERROR] $1${NC}" | tee -a "$LOG_FILE"
-    exit 1
-}
-
-warn() {
-    echo -e "${YELLOW}[WARN] $1${NC}" | tee -a "$LOG_FILE"
-}
-
-info() {
-    echo -e "${BLUE}[INFO] $1${NC}" | tee -a "$LOG_FILE"
-}
-
-success() {
-    echo -e "${GREEN}[SUCCESS] $1${NC}" | tee -a "$LOG_FILE"
-}
-
-# Check if running as root
+FAMILY=""
 check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        error "This installer must be run as root\n   curl -sSL https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/install.sh | sudo bash"
-    fi
+    [[ $EUID -eq 0 ]] || error "This installer must be run as root (sudo)."
 }
 
-# Check system requirements
+detect_distro() {
+    [[ -f /etc/os-release ]] || error "Cannot detect the distribution (no /etc/os-release)."
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    local ids=" ${ID:-} ${ID_LIKE:-} "
+    if   [[ "$ids" == *" debian "* || "$ids" == *" ubuntu "* ]]; then FAMILY=debian
+    elif [[ "$ids" == *" fedora "* || "$ids" == *" rhel "* || "$ids" == *" centos "* ]]; then FAMILY=rhel
+    else
+        error "Unsupported distribution '${PRETTY_NAME:-$ID}'. Install by hand: wireguard-tools, iproute2, iptables, python3 (>=3.9) with venv, nodejs (>=18), npm, git, then run scripts/setup_circuits.sh and 'zkvpn serve'."
+    fi
+    info "Detected ${PRETTY_NAME:-$ID} (family: $FAMILY)"
+}
+
+pkg_install() {
+    case "$FAMILY" in
+        debian) DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$@" >> "$LOG_FILE" 2>&1 ;;
+        rhel)   dnf install -y -q "$@" >> "$LOG_FILE" 2>&1 ;;
+    esac
+}
+
 check_requirements() {
     info "Checking system requirements..."
-    
-    # OS Check
-    if [[ -f /etc/os-release ]]; then
-        . /etc/os-release
-        if [[ "$ID" != "ubuntu" && "$ID" != "debian" ]]; then
-            warn "This installer is optimized for Ubuntu/Debian. Your OS: $ID"
-        fi
-    fi
-    
-    # Python version
-    if ! command -v python3 &> /dev/null; then
-        error "Python 3 is not installed. Install it with: apt-get install python3 python3-pip python3-venv"
-    fi
-    
-    PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    if [[ $(echo "$PYTHON_VERSION < 3.8" | bc) -eq 1 ]]; then
-        error "Python 3.8+ required (found $PYTHON_VERSION)"
-    fi
-    info "Python $PYTHON_VERSION detected"
-    
-    # Check memory (minimum 256MB)
-    TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}')
-    if [[ $TOTAL_MEM -lt 256 ]]; then
-        warn "Low memory detected (${TOTAL_MEM}MB). Minimum recommended: 256MB"
-    fi
-    
-    # Check disk space
-    AVAIL_DISK=$(df -m / | awk 'NR==2 {print $4}')
-    if [[ $AVAIL_DISK -lt 500 ]]; then
-        warn "Low disk space (${AVAIL_DISK}MB). Minimum recommended: 500MB"
-    fi
+    [[ -d /run/systemd/system ]] || warn "systemd is not running: the service unit will be written but cannot be started here"
+    local mem; mem=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+    [[ $mem -ge 256 ]] || warn "Low memory (${mem}MB); 256MB recommended"
 }
 
-# Install system dependencies
 install_dependencies() {
     info "Installing system dependencies..."
-    
-    apt-get update -qq
-    apt-get install -y -qq \
-        wireguard \
-        wireguard-tools \
-        python3 \
-        python3-pip \
-        python3-venv \
-        curl \
-        wget \
-        git \
-        ufw \
-        resolvconf \
-        net-tools \
-        dnsutils \
-        bc \
-        > /dev/null 2>&1
-    
-    # Verify WireGuard installation
-    if ! command -v wg &> /dev/null; then
-        error "WireGuard installation failed"
+    case "$FAMILY" in
+        debian)
+            apt-get update -qq >> "$LOG_FILE" 2>&1
+            pkg_install wireguard-tools iproute2 iptables python3 python3-venv python3-pip \
+                        nodejs npm git curl ca-certificates ;;
+        rhel)
+            pkg_install wireguard-tools iproute iptables-nft python3 python3-pip \
+                        nodejs npm git curl ca-certificates ;;
+    esac
+
+    local pyok nodemajor
+    pyok=$(python3 -c 'import sys; print(int(sys.version_info >= (3, 9)))')
+    [[ "$pyok" == 1 ]] || error "Python 3.9+ required (found $(python3 -V))"
+    nodemajor=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+    [[ "$nodemajor" -ge 18 ]] || error "Node.js 18+ required (found $(node -v 2>/dev/null || echo none)). See https://github.com/nodesource/distributions"
+    command -v wg >/dev/null || error "WireGuard tools installation failed"
+
+    # Kernel WireGuard if available, wireguard-go (userspace) otherwise (containers, old kernels)
+    if ip link add zkvpn-probe type wireguard 2>/dev/null; then
+        ip link del zkvpn-probe
+        info "Kernel WireGuard available"
+    else
+        warn "Kernel WireGuard unavailable; installing wireguard-go (userspace)"
+        pkg_install wireguard-go || warn "wireguard-go is not packaged here: install a kernel with WireGuard or build wireguard-go"
     fi
-    
     success "System dependencies installed"
 }
 
-# Create directories with secure permissions
-create_directories() {
-    info "Creating directories..."
-    
-    # Install directory
-    mkdir -p "$INSTALL_DIR"
+create_user_and_directories() {
+    info "Creating service user and directories..."
+    if ! id "$SERVICE_USER" &>/dev/null; then
+        useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
+    fi
+    mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" /var/log/zkvpn
     chmod 755 "$INSTALL_DIR"
-    
-    # Config directory
-    mkdir -p "$CONFIG_DIR"
-    chmod 750 "$CONFIG_DIR"
-    
-    # Log directory
-    mkdir -p /var/log/zkvpn
-    chmod 750 /var/log/zkvpn
-    
-    # Create empty .env file with secure permissions
-    touch "${CONFIG_DIR}/.env"
-    chmod 600 "${CONFIG_DIR}/.env"
-    chown root:root "${CONFIG_DIR}/.env"
-    
-    info "Directories created at $INSTALL_DIR"
+    chown root:"$SERVICE_USER" "$CONFIG_DIR"; chmod 750 "$CONFIG_DIR"
+    chown "$SERVICE_USER":"$SERVICE_USER" /var/log/zkvpn; chmod 750 /var/log/zkvpn
+    # secrets live here: root-only (systemd reads it as root, the service never opens it)
+    touch "${CONFIG_DIR}/.env"; chmod 600 "${CONFIG_DIR}/.env"; chown root:root "${CONFIG_DIR}/.env"
 }
 
-# Clone or update repository
 get_code() {
     info "Fetching ZK-VPN code..."
-    
-    if [[ -d "${INSTALL_DIR}/src" ]]; then
-        warn "Existing installation found. Updating..."
-        cd "$INSTALL_DIR"
-        git pull origin "$BRANCH" || {
-            warn "Git pull failed, continuing with existing code"
-        }
+    if [[ -n "$SOURCE_DIR" ]]; then
+        [[ -d "${SOURCE_DIR}/src" ]] || error "ZKVPN_SOURCE_DIR=${SOURCE_DIR} has no src/"
+        # copy the tree (no .git, no build output, no caches)
+        tar -C "$SOURCE_DIR" --exclude=.git --exclude=node_modules --exclude=__pycache__ \
+            --exclude='*.egg-info' -cf - . | tar -C "$INSTALL_DIR" -xf -
+    elif [[ -d "${INSTALL_DIR}/.git" ]]; then
+        git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH" >> "$LOG_FILE" 2>&1 \
+            || warn "git pull failed, continuing with existing code"
     else
-        git clone --depth 1 --branch "$BRANCH" \
-            "https://github.com/${REPO}.git" \
-            "${INSTALL_DIR}/tmp" || error "Failed to clone repository"
-        
-        mv "${INSTALL_DIR}/tmp/zk-vpn-prototype/src" "${INSTALL_DIR}/src"
-        rm -rf "${INSTALL_DIR}/tmp"
+        git clone --depth 1 --branch "$BRANCH" "https://github.com/${REPO}.git" "$INSTALL_DIR" >> "$LOG_FILE" 2>&1 \
+            || error "Failed to clone repository"
     fi
-    
-    if [[ ! -d "${INSTALL_DIR}/src" ]]; then
-        error "Failed to fetch source code"
-    fi
-    
-    success "Code fetched successfully"
+    [[ -d "${INSTALL_DIR}/src" ]] || error "Failed to fetch source code"
+    success "Code fetched"
 }
 
-# Setup Python virtual environment
 setup_venv() {
     info "Setting up Python virtual environment..."
-    
     python3 -m venv "$VENV_DIR"
-    source "${VENV_DIR}/bin/activate"
-    
-    # Upgrade pip
-    pip install --upgrade pip setuptools wheel > /dev/null 2>&1
-    
-    # Install dependencies
-    if [[ -f "${INSTALL_DIR}/src/requirements.txt" ]]; then
-        pip install -r "${INSTALL_DIR}/src/requirements.txt" > /dev/null 2>&1
-    else
-        # Minimal dependencies
-        pip install \
-            pydantic \
-            pydantic-settings \
-            click \
-            python-dotenv \
-            > /dev/null 2>&1
-    fi
-    
-    # Install the package in development mode
-    cd "${INSTALL_DIR}/src"
-    pip install -e . > /dev/null 2>&1
-    
-    deactivate
-    
+    "${VENV_DIR}/bin/pip" install --quiet --upgrade pip setuptools wheel >> "$LOG_FILE" 2>&1
+    "${VENV_DIR}/bin/pip" install --quiet -r "${INSTALL_DIR}/requirements.txt" >> "$LOG_FILE" 2>&1 \
+        || error "pip install of requirements failed (see $LOG_FILE)"
+    "${VENV_DIR}/bin/pip" install --quiet -e "$INSTALL_DIR" >> "$LOG_FILE" 2>&1 \
+        || error "pip install of zkvpn failed (see $LOG_FILE)"
     success "Virtual environment created"
 }
 
-# Generate initial configuration
-generate_config() {
-    info "Generating secure configuration..."
-    
-    # Generate WireGuard private key
-    WG_PRIVATE_KEY=$(wg genkey)
-    WG_PUBLIC_KEY=$(echo "$WG_PRIVATE_KEY" | wg pubkey)
-    
-    # Generate random node ID
-    NODE_ID="node-$(tr -dc a-f0-九 < /dev/urandom | head -c 16)"
-    
-    # Write configuration
-    cat > "${CONFIG_DIR}/.env" << EOF
-# ZK-VPN Configuration
-# Generated: $(date)
-# DO NOT SHARE THIS FILE
-
-# Node configuration
-ZKVPN_NODE_ID=${NODE_ID}
-ZKVPN_PORT=51820
-ZKVPN_HOST=0.0.0.0
-
-# Security
-ZKVPN_LOG_LEVEL=INFO
-ZKVPN_PROOF_TTL_SECONDS=3600
-ZKVPN_SESSION_TIMEOUT_SECONDS=7200
-ZKVPN_MAX_SESSIONS=10
-
-# WireGuard
-ZKVPN_WIREGUARD_INTERFACE=zkvpn0
-ZKVPN_NETWORK_CIDR=10.0.0.0/24
-ZKVPN_PRIVATE_KEY=${WG_PRIVATE_KEY}
-
-# Performance
-ZKVPN_MEMORY_MAX_MB=150
-ZKVPN_CPU_QUOTA_PERCENT=10
-EOF
-    
-    chmod 600 "${CONFIG_DIR}/.env"
-    
-    # Save public key for peer configuration
-    echo "$WG_PUBLIC_KEY" > "${CONFIG_DIR}/public.key"
-    chmod 644 "${CONFIG_DIR}/public.key"
-    
-    success "Configuration generated"
-    info "Node public key: ${WG_PUBLIC_KEY}"
+build_circuits() {
+    info "Building ZK circuit (about a minute)..."
+    "${VENV_DIR}/bin/zkvpn" zk setup --dir "${INSTALL_DIR}/zk" >> "$LOG_FILE" 2>&1 \
+        || error "ZK circuit build failed (run '${VENV_DIR}/bin/zkvpn zk setup --dir ${INSTALL_DIR}/zk' to see why)"
+    warn "ZK keys come from a SINGLE-PARTY development setup; use 'zkvpn zk ceremony' for production"
+    chmod -R a+rX "${INSTALL_DIR}/zk"
+    success "ZK circuit built"
 }
 
-# Setup systemd service
+generate_config() {
+    info "Generating configuration..."
+    if grep -q '^ZKVPN_PRIVATE_KEY=' "${CONFIG_DIR}/.env" 2>/dev/null; then
+        warn "Existing configuration kept (${CONFIG_DIR}/.env)"
+        return
+    fi
+    local priv pub
+    priv=$(wg genkey); pub=$(echo "$priv" | wg pubkey)
+    cat > "${CONFIG_DIR}/.env" << ENVFILE
+# ZK-VPN configuration -- DO NOT SHARE (contains the WireGuard private key)
+ZKVPN_NODE_ID=node-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')
+ZKVPN_PORT=${WG_PORT}
+ZKVPN_ADMISSION_PORT=${ADMISSION_PORT}
+ZKVPN_HOST=0.0.0.0
+ZKVPN_LOG_LEVEL=INFO
+ZKVPN_WIREGUARD_INTERFACE=zkvpn0
+ZKVPN_NETWORK_CIDR=10.0.0.0/24
+ZKVPN_PRIVATE_KEY=${priv}
+ZKVPN_ZK_DIR=${INSTALL_DIR}/zk
+ZKVPN_STATE_DIR=/run/zkvpn
+ZKVPN_REQUIRE_CLIENT_PROOF=true
+# Comma-separated client identities allowed to connect (EMPTY = ANY valid identity!):
+ZKVPN_AUTHORIZED_IDENTITIES=
+ENVFILE
+    chmod 600 "${CONFIG_DIR}/.env"
+    echo "$pub" > "${CONFIG_DIR}/public.key"; chmod 644 "${CONFIG_DIR}/public.key"
+    success "Configuration generated"
+    info "Server WireGuard public key: ${pub}"
+}
+
 setup_systemd() {
-    info "Setting up systemd service..."
-    
-    cat > /etc/systemd/system/zkvpn.service << EOF
+    info "Writing systemd unit..."
+    cat > /etc/systemd/system/zkvpn.service << UNIT
 [Unit]
-Description=ZK-VPN Secure Tunnel
+Description=ZK-VPN server
 Documentation=https://github.com/${REPO}
-After=network.target network-online.target
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=nobody
-Group=nogroup
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
 EnvironmentFile=${CONFIG_DIR}/.env
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${VENV_DIR}/bin/zkvpn-node
-ExecReload=/bin/kill -HUP \$MAINPID
-Restart=always
-RestartSec=10
+ExecStart=${VENV_DIR}/bin/zkvpn serve
+Restart=on-failure
+RestartSec=5
+# /run/zkvpn: state that must survive a restart of the process but not a reboot
+RuntimeDirectory=zkvpn
+RuntimeDirectoryMode=0700
 
-# Security hardening
+# wireguard-go (used when the kernel has no WireGuard) needs /dev/net/tun; the standard mode is
+# 0666, but some containers create it 0600. Fix it only when it is not already usable.
+ExecStartPre=-+/usr/bin/find /dev/net/tun -maxdepth 0 ! -perm -0666 -exec chmod 0666 {} +
+# wireguard-go keeps its control socket in /run/wireguard and must be able to create it
+ExecStartPre=+/usr/bin/install -d -o ${SERVICE_USER} -g ${SERVICE_USER} -m 0750 /run/wireguard
+
+# Network administration without root
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+
+# Hardening. /run stays writable: iptables needs /run/xtables.lock and
+# wireguard-go its control socket in /run/wireguard.
 NoNewPrivileges=yes
 PrivateTmp=yes
-PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=${CONFIG_DIR} /var/log/zkvpn
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
+ReadWritePaths=/run /var/log/zkvpn
 ProtectControlGroups=yes
 RestrictRealtime=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
-MemoryMax=150M
-CPUQuota=10%
+MemoryMax=300M
 
 [Install]
 WantedBy=multi-user.target
-EOF
-    
-    systemctl daemon-reload
-    success "Systemd service created"
+UNIT
+    if [[ -d /run/systemd/system ]]; then systemctl daemon-reload; fi
+    success "Systemd unit written"
 }
 
-# Basic system hardening
-harden_system() {
-    info "Applying basic system hardening..."
-    
-    # Configure UFW firewall
-    if command -v ufw &> /dev/null; then
-        ufw --force disable > /dev/null 2>&1
-        ufw default deny incoming > /dev/null 2>&1
-        ufw default allow outgoing > /dev/null 2>&1
-        ufw allow 51820/udp comment 'ZK-VPN WireGuard' > /dev/null 2>&1
-        ufw allow ssh > /dev/null 2>&1
-        ufw --force enable > /dev/null 2>&1
-        info "Firewall configured"
+setup_network() {
+    info "Configuring network (IP forwarding, firewall)..."
+    # The only system-wide change: let the host route packets. Everything else
+    # (NAT, forwarding rules, client isolation) is added and removed by the service itself.
+    printf 'net.ipv4.ip_forward=1\n' > /etc/sysctl.d/99-zkvpn.conf
+    sysctl -q -p /etc/sysctl.d/99-zkvpn.conf >> "$LOG_FILE" 2>&1 || warn "Could not apply ip_forward now (it will apply at next boot)"
+
+    # Open the ports only in a firewall that is already active; never enable or reset one.
+    if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw allow ${WG_PORT}/udp >/dev/null; ufw allow ${ADMISSION_PORT}/tcp >/dev/null
+        info "Opened ${WG_PORT}/udp and ${ADMISSION_PORT}/tcp in ufw"
+    elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+        firewall-cmd --permanent --add-port=${WG_PORT}/udp --add-port=${ADMISSION_PORT}/tcp >/dev/null
+        firewall-cmd --reload >/dev/null
+        info "Opened ${WG_PORT}/udp and ${ADMISSION_PORT}/tcp in firewalld"
+    else
+        warn "No active ufw/firewalld: make sure ${WG_PORT}/udp and ${ADMISSION_PORT}/tcp are reachable"
     fi
-    
-    # Kernel parameters for WireGuard optimization
-    cat > /etc/sysctl.d/99-zkvpn.conf << EOF
-# ZK-VPN optimizations
-net.ipv4.ip_forward=1
-net.ipv6.conf.all.forwarding=1
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-net.ipv4.conf.all.rp_filter=strict
-net.ipv4.conf.default.rp_filter=strict
-net.ipv4.tcp_syncookies=1
-EOF
-    
-    sysctl -p /etc/sysctl.d/99-zkvpn.conf > /dev/null 2>&1 || warn "Failed to apply kernel parameters"
-    
-    success "System hardening applied"
 }
 
-# Create CLI symlink
 create_symlink() {
-    info "Creating CLI symlink..."
-    
-    cat > /usr/local/bin/zkvpn << EOF
-#!/bin/bash
-source ${VENV_DIR}/bin/activate
-python3 -m zkvpn.cli.main "\$@"
-deactivate
-EOF
-    
-    chmod +x /usr/local/bin/zkvpn
-    
-    # Create node service wrapper
-    cat > /usr/local/bin/zkvpn-node << EOF
-#!/bin/bash
-source ${VENV_DIR}/bin/activate
-python3 -m zkvpn.cli.main node --config ${CONFIG_DIR}/.env
-EOF
-    
-    chmod +x /usr/local/bin/zkvpn-node
-    
+    ln -sf "${VENV_DIR}/bin/zkvpn" /usr/local/bin/zkvpn
     success "CLI installed at /usr/local/bin/zkvpn"
 }
 
-# Test installation
 test_installation() {
     info "Testing installation..."
-    
-    # Test import
-    if ! source "${VENV_DIR}/bin/activate" && python3 -c "import zkvpn" 2>/dev/null; then
-        warn "Python import test failed"
-    else
-        success "Python module import successful"
+    "${VENV_DIR}/bin/python" -c "import zkvpn" || error "Python import test failed"
+    /usr/local/bin/zkvpn --version >/dev/null || error "CLI test failed"
+    # the service user must be able to read everything it needs
+    if command -v runuser >/dev/null; then
+        runuser -u "$SERVICE_USER" -- "${VENV_DIR}/bin/zkvpn" --version >/dev/null \
+            || error "CLI does not work as user ${SERVICE_USER}"
     fi
-    deactivate 2>/dev/null || true
-    
-    # Test CLI
-    if ! /usr/local/bin/zkvpn --version 2>/dev/null; then
-        warn "CLI test failed"
-    else
-        success "CLI test successful"
-    fi
+    success "Installation test passed"
 }
 
-# Main installation flow
 main() {
-    log "${GREEN}Starting ZK-VPN installation v0.1.0-rc1${NC}"
-    
+    log "${GREEN}Installing ZK-VPN${NC}"
     check_root
+    detect_distro
     check_requirements
-    
-    # Installation phases
     install_dependencies
-    create_directories
+    create_user_and_directories
     get_code
     setup_venv
+    build_circuits
     generate_config
     setup_systemd
-    harden_system
+    setup_network
     create_symlink
     test_installation
-    
-    # Final message
-    echo ""
-    success "ZK-VPN installation completed successfully!"
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "📋 Next steps:"
-    echo ""
-    echo "  1. Check configuration:"
-    echo "     ${GREEN}sudo cat ${CONFIG_DIR}/public.key${NC}"
-    echo ""
-    echo "  2. Start ZK-VPN service:"
-    echo "     ${GREEN}sudo systemctl start zkvpn${NC}"
-    echo ""
-    echo "  3. Enable on boot:"
-    echo "     ${GREEN}sudo systemctl enable zkvpn${NC}"
-    echo ""
-    echo "  4. Check status:"
-    echo "     ${GREEN}sudo systemctl status zkvpn${NC}"
-    echo ""
-    echo "  5. Test your VPN:"
-    echo "     ${GREEN}zkvpn status${NC}"
-    echo "     ${GREEN}zkvpn test --leak-check${NC}"
-    echo ""
-    echo "📚 Documentation: https://github.com/${REPO}"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    echo -e "${YELLOW}Node public key:${NC}"
-    echo -e "${GREEN}$(cat ${CONFIG_DIR}/public.key)${NC}"
-    echo ""
-    
-    log "Installation log saved to ${LOG_FILE}"
+
+    echo
+    success "ZK-VPN installed."
+    cat << NEXT
+Next steps:
+  1. Create a client identity (on the client):   zkvpn identity new ~/.zkvpn-identity
+  2. Put its public identity in ${CONFIG_DIR}/.env  (ZKVPN_AUTHORIZED_IDENTITIES=...)
+  3. Start:   systemctl enable --now zkvpn      Logs: journalctl -u zkvpn
+  4. Give clients this server key: $(cat "${CONFIG_DIR}/public.key")
+NEXT
 }
 
-# Run main function
 main "$@"
