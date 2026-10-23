@@ -14,7 +14,8 @@ from typing import Optional, Union
 from zkvpn.platform import WINDOWS, system as _system
 
 # Principals allowed to appear in a "private" Windows ACL besides the owner
-_WINDOWS_TRUSTED = {"NT AUTHORITY\\SYSTEM", "BUILTIN\\ADMINISTRATORS", "NT SERVICE\\TRUSTEDINSTALLER"}
+_WINDOWS_TRUSTED = {"NT AUTHORITY\\SYSTEM", "BUILTIN\\ADMINISTRATORS", "NT SERVICE\\TRUSTEDINSTALLER",
+                    "NT AUTHORITY\\OWNER RIGHTS", "OWNER RIGHTS", "CREATOR OWNER"}
 
 
 def _windows_user() -> str:
@@ -45,6 +46,9 @@ def restrict_to_owner(path: Union[str, Path], system_name: str = None, *,
         grants = ["/grant:r", f"{user}:(F)"]
         if allow_system:
             grants += ["/grant:r", "NT AUTHORITY\\SYSTEM:(F)"]
+        # /reset drops every explicit entry (e.g. one a careless user added for Everyone);
+        # /inheritance:r then drops the inherited ones
+        subprocess.run(["icacls", path, "/reset"], capture_output=True, check=True)
         subprocess.run(["icacls", path, "/inheritance:r", *grants], capture_output=True, check=True)
     else:
         os.chmod(path, 0o600)
