@@ -55,8 +55,9 @@ def is_private(path: Union[str, Path], system_name: str = None) -> bool:
     path = str(path)
     if _system(system_name) == WINDOWS:
         out = subprocess.run(["icacls", path], capture_output=True, text=True, check=True).stdout
-        allowed = _WINDOWS_TRUSTED | {_windows_user().upper()}
-        return _icacls_principals(out, path) <= allowed
+        # compare account names only: `whoami` may omit the domain that icacls prints
+        allowed = {p.split("\\")[-1] for p in _WINDOWS_TRUSTED} | {_windows_user().upper().split("\\")[-1]}
+        return {p.split("\\")[-1] for p in _icacls_principals(out, path)} <= allowed
     return not (stat.S_IMODE(os.stat(path).st_mode) & 0o077)
 
 

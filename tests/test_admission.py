@@ -3,7 +3,8 @@
 import asyncio
 import json
 import os
-import stat
+import subprocess
+import sys
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,6 +13,7 @@ from zkvpn.protocol.admission import AdmissionError, AdmissionServer, request_ad
 from zkvpn.protocol.tunnel import ZKTunnel
 from zkvpn.protocol.wireguard import WireGuardInterface
 from zkvpn.zk import (SnarkBackend, generate_identity, load_identity, save_identity)
+from zkvpn.platform import fsperm
 from zkvpn.platform.net import get_backend
 
 LINUX = get_backend("linux")      # these tests exercise the Linux server role on any runner
@@ -146,14 +148,21 @@ async def test_connect_fails_closed_when_admission_refused(server):
     add_peer.assert_not_called()
 
 
+def make_world_readable(path):
+    if sys.platform == "win32":
+        subprocess.run(["icacls", str(path), "/grant", "Everyone:(R)"], capture_output=True, check=True)
+    else:
+        os.chmod(path, 0o644)
+
+
 def test_identity_file_permissions(tmp_path):
     path = str(tmp_path / "id")
     sk = save_identity(path)
-    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert fsperm.is_private(path)
     assert load_identity(path) == sk
     with pytest.raises(FileExistsError):
         save_identity(path)                      # never overwrite an identity
-    os.chmod(path, 0o644)
+    make_world_readable(path)
     with pytest.raises(PermissionError):
         load_identity(path)                      # refuse world-readable secrets
 

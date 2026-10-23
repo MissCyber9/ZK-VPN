@@ -44,19 +44,18 @@ class TestSettings:
         del os.environ["ZKVPN_LOG_LEVEL"]
         del os.environ["ZKVPN_WIREGUARD_INTERFACE"]
     
-    def test_env_file_loading(self):
+    def test_env_file_loading(self, tmp_path):
         """Test loading from .env file."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".env") as f:
-            f.write("ZKVPN_NODE_ID=test-node-123\n")
-            f.write("ZKVPN_PORT=9999\n")
-            f.write("ZKVPN_NETWORK_CIDR=10.10.0.0/16\n")
-            f.flush()
-            
-            settings = Settings(_env_file=f.name)
-            
-            assert settings.node_id == "test-node-123"
-            assert settings.port == 9999
-            assert settings.network_cidr == "10.10.0.0/16"
+        env_file = tmp_path / "test.env"          # not NamedTemporaryFile: Windows cannot reopen it
+        env_file.write_text("ZKVPN_NODE_ID=test-node-123\n"
+                            "ZKVPN_PORT=9999\n"
+                            "ZKVPN_NETWORK_CIDR=10.10.0.0/16\n")
+
+        settings = Settings(_env_file=str(env_file))
+
+        assert settings.node_id == "test-node-123"
+        assert settings.port == 9999
+        assert settings.network_cidr == "10.10.0.0/16"
     
     def test_node_id_auto_generation(self):
         """Test automatic node_id generation."""
@@ -168,7 +167,7 @@ class TestSettings:
         assert settings1 is settings2
         assert id(settings1) == id(settings2)
     
-    @patch.dict(os.environ, {"ZKVPN_LOG_LEVEL": "INVALID"}, clear=True)
+    @patch.dict(os.environ, {"ZKVPN_LOG_LEVEL": "INVALID"})
     def test_invalid_log_level(self):
         """Test invalid log level validation."""
         with pytest.raises(ValidationError):
