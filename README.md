@@ -1,80 +1,85 @@
-# ZK-VPN (prototype)
+# ZK-VPN
 
-Prototype de VPN WireGuard piloté en Python, avec une couche de « preuves » destinée
-à devenir un jour de vraies preuves zero-knowledge.
+VPN WireGuard piloté en Python, dont l'**admission des clients** repose sur de vraies preuves
+zero-knowledge (Groth16, circom + snarkjs) : le client prouve qu'il connaît la clé secrète d'une
+identité, pour un challenge du serveur lié à sa clé WireGuard, sans la révéler.
 
-> ⚠️ **Statut : maquette, non auditée, non utilisable en production.**
-> L'**admission des clients** repose sur de vraies preuves Groth16 (`zkvpn.zk`), mais la
-> cérémonie de setup est locale et mono-partie (développement uniquement).
-> Ce projet **ne prouve pas** l'absence de logs : aucune preuve ZK ne le peut. Voir [AUDIT.md](AUDIT.md).
+> ⚠️ **Statut : prototype non audité.** Les clés de preuve produites par `zkvpn zk setup` viennent
+> d'un setup **mono-partie** (développement). Ce projet **ne prouve pas** l'absence de logs :
+> aucune preuve ZK ne le peut. Voir [AUDIT.md](AUDIT.md) et [SECURITY.md](SECURITY.md).
 
-## Ce qui existe
-- Gestion d'une interface WireGuard via `wg` / `ip` (`protocol/wireguard.py`, `tunnel.py`)
-- **Authentification ZK de session** (Groth16, circom + snarkjs) : le client prouve qu'il
-  connaît la clé secrète de son identité, pour un challenge du serveur **lié à sa clé
-  WireGuard**, avec horodatage frais (`circuits/session_auth.circom`, `src/zkvpn/zk/`)
-- **Protocole d'admission** TCP (`protocol/admission.py`) : hello → challenge → preuve → IP attribuée.
-  Le serveur refuse les clients sans preuve valide (`ZKVPN_REQUIRE_CLIENT_PROOF`,
-  `ZKVPN_AUTHORIZED_IDENTITIES`, `ZKVPN_ADMISSION_PORT`)
-- **Routage client** (tout le trafic dans le tunnel, route épinglée vers le serveur) et **NAT serveur** (clients isolés les uns des autres)
-- **Kill-switch** iptables/ip6tables (bloque tout hors tunnel, DoT/DoH inclus), activé à la connexion client
-- Protection DNS basique (`protocol/dns.py`)
-- Stockage en mémoire avec TTL (`core/memory.py`), configuration `ZKVPN_*` (`core/config.py`)
-- CLI `zkvpn` : `serve`, `connect`, `disconnect`, `status`, `identity`, `config`, `peer`, `test`
+## Systèmes pris en charge
 
-## Ce qui n'existe pas (encore)
-- Cérémonie de confiance multipartite pour les clés de preuve
-- Chiffrement/authentification du canal d'admission (il ne transporte que des données publiques ;
-  le serveur est authentifié par sa clé WireGuard, à épingler hors bande)
-- Réseau P2P, système de réputation, interface web
-- Tests sur machine physique / sous systemd (le kill-switch, le NAT et le routage sont en revanche vérifiés sur réseau virtuel, voir `tests/e2e`)
+| | Client | Serveur | Ce qui est vérifié |
+|---|---|---|---|
+| **Linux** (Debian/Ubuntu, Fedora/RHEL) | oui | oui | de bout en bout (WireGuard, routes, kill-switch, DNS, NAT) sur réseau virtuel et sous systemd ; CI Ubuntu, Debian, Fedora |
+| **Docker** | oui | oui | image construite et testée (voir `tests/docker/smoke.sh`) |
+| **macOS** | oui | non | tests unitaires + vrai WireGuard (interface, clés, pair, handshake) en CI ; routes, pare-feu `pf` et DNS **non appliqués en CI** |
+| **Windows** | oui | non | idem (service WireGuard, `netsh`, PowerShell) |
+| Autre | dégradé | non | le cœur (preuves, protocole, CLI) fonctionne ; le réseau est refusé proprement |
+
+Le cœur (preuves ZK, protocole d'admission, CLI, configuration) est le même partout ; seule la
+couche réseau (`zkvpn.platform.net`) change d'un système à l'autre. Lancez `zkvpn doctor` pour
+savoir ce qui manque sur votre machine.
+
+## Installation
+
+Prérequis : Python ≥ 3.9, Node ≥ 18 (compilation du circuit), WireGuard (module noyau,
+`wireguard-go`, ou WireGuard pour Windows) et les outils réseau du système.
+
+```bash
+pipx install .            # ou : python -m venv .venv && . .venv/bin/activate && pip install .
+zkvpn doctor              # état de la machine
+zkvpn zk setup            # compile le circuit, génère les clés de DÉVELOPPEMENT (~1 min)
+```
+
+Les clés, l'identité et la configuration sont créées chez vous (dossiers utilisateur du système,
+modifiables par `ZKVPN_*`), jamais dans le dépôt.
+
+### Serveur Linux (systemd)
+```bash
+sudo ./scripts/install.sh
+sudo systemctl enable --now zkvpn
+```
+Utilisateur système dédié (`zkvpn`), seulement `CAP_NET_ADMIN`/`CAP_NET_RAW`, pare-feu modifié
+uniquement s'il est déjà actif.
+
+### Docker
+```bash
+docker compose up --build        # serveur ; les clés de preuve sont construites dans l'image
+```
+L'image ne contient ni identité ni clé WireGuard : fournissez `ZKVPN_PRIVATE_KEY` à l'exécution.
 
 ## Utilisation
 ```bash
-# Serveur (root) : écoute WireGuard + admission, liste blanche optionnelle
+# Serveur (privilèges réseau) : affiche sa clé publique WireGuard
 ZKVPN_AUTHORIZED_IDENTITIES=<pk1>,<pk2> zkvpn serve
 
 # Client : créer une identité, donner la clé publique affichée à l'opérateur, se connecter
-zkvpn identity new ~/.zkvpn-identity          # fichier 0600, jamais écrasé
-zkvpn connect -e <ip>:51820 -k <clé WireGuard du serveur> -i ~/.zkvpn-identity
+zkvpn identity new
+zkvpn connect -e <ip>:51820 -k <clé WireGuard du serveur>
+zkvpn status
+zkvpn disconnect
 ```
+Une liste blanche vide admet **toute** identité valide : renseignez `ZKVPN_AUTHORIZED_IDENTITIES`
+en production. Pour de vraies clés de preuve, faites une cérémonie multipartite :
+`zkvpn zk ceremony init | contribute | beacon | verify | finalize`.
 
-## Installation (développement)
+## Développement et tests
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt -e .
-scripts/setup_circuits.sh   # Node >= 18 : compile le circuit, génère les clés (~1 min)
-pytest                      # tests unitaires ; les tests ZK sont ignorés si les artefacts manquent
-
-# Tests de bout en bout sur un vrai réseau virtuel (namespaces Linux, root requis) :
-# vrai WireGuard (noyau ou wireguard-go), vraies règles iptables, vraies preuves
-sudo -E env "PATH=$PATH" pytest -m e2e tests/e2e
+zkvpn zk setup
+pytest                                        # unitaires, tous systèmes
+pytest -m slow tests/test_ceremony.py         # cérémonie complète
+sudo -E env "PATH=$PATH" pytest -m e2e tests/e2e          # Linux, root : réseau virtuel
+tests/distro/run.sh ubuntu:24.04 --e2e        # installeur + service systemd réel (Docker)
 ```
+La CI (`.github/workflows/ci.yml`) exécute tout cela sur Linux, macOS et Windows.
 
-## Installation serveur (Linux + systemd)
-```bash
-sudo ./scripts/install.sh          # ou : curl -sSL .../scripts/install.sh | sudo bash
-sudo systemctl enable --now zkvpn
-```
-Familles prises en charge (détectées via `/etc/os-release`) : **Debian/Ubuntu** (apt) et
-**Fedora/RHEL/Rocky/Alma** (dnf). Sur une autre distribution l'installeur s'arrête et liste ce qu'il
-faut installer à la main (WireGuard, iproute2, iptables, Python ≥ 3.9, Node ≥ 18). Le service tourne
-sous un utilisateur système dédié (`zkvpn`) avec seulement `CAP_NET_ADMIN`/`CAP_NET_RAW`. Le module
-noyau WireGuard est utilisé s'il existe, sinon `wireguard-go` (conteneurs, noyaux anciens).
-
-Windows et Android (Termux) ne sont pas pris en charge : le projet manipule le routage, iptables et
-des interfaces WireGuard, ce qui demande Linux et les droits root.
-
-Le banc `tests/distro/run.sh <image> [--e2e]` installe ZK-VPN dans un conteneur avec systemd, démarre le
-vrai service, y connecte un vrai client et vérifie le nettoyage ; la CI le lance sur Ubuntu 24.04,
-Debian 12 et Fedora 41.
-
-### Clés de preuve de production
-`scripts/setup_circuits.sh` génère des clés avec un setup **mono-partie** (développement). Pour la
-production, utilisez `scripts/ceremony.sh` : phase 1 publique (fichier Powers of Tau d'une grande
-cérémonie), puis une chaîne de contributions indépendantes, une balise publique, et
-`ceremony.sh verify` qui revérifie toute la chaîne. Les clés sont sûres si au moins un participant a
-détruit sa contribution.
+## Dépôt public : ce qui n'y est jamais
+Aucune clé, identité, `.env`, adresse e-mail personnelle ou chemin de machine. Les contributions
+utilisent l'adresse `noreply` de GitHub. Des tests (`tests/test_repo_hygiene.py`) et un scan
+d'historique (gitleaks) le vérifient à chaque push. Voir [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licence
 [MIT](LICENSE)
