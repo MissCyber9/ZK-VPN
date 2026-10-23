@@ -53,7 +53,8 @@ def _run(cmd: Sequence[str], cwd: Optional[Path] = None) -> str:
     except FileNotFoundError as e:
         raise ToolchainError(f"{cmd[0]} not found: {e}")
     if result.returncode != 0:
-        tail = (result.stderr or result.stdout).strip().splitlines()[-8:]
+        both = ((result.stderr or "") + "\n" + (result.stdout or "")).strip()
+        tail = both.splitlines()[-40:]
         raise ToolchainError(f"{Path(str(cmd[0])).name} failed ({result.returncode}):\n" + "\n".join(tail))
     return result.stdout
 
