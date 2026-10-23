@@ -6,6 +6,11 @@
 Please open a private security advisory on GitHub (Security → Report a vulnerability) rather than a
 public issue. Include the version/commit, what you did, and what you expected.
 
+## Repository privacy
+The repository is public. `tests/test_repo_hygiene.py` and a secret-scanning CI job guard against
+personal data (e-mails, home paths), credentials and key material, in files and in commit history.
+See `CONTRIBUTING.md`.
+
 ## What the system claims (and does not)
 | Claim | Mechanism |
 |---|---|
@@ -21,8 +26,8 @@ traffic and WireGuard public keys. The admission channel is plain TCP carrying o
 network attacker can block it but not forge an admission.
 
 ## Trust assumptions
-1. **Trusted setup.** `scripts/setup_circuits.sh` is a *single-party* setup: whoever ran it can forge
-   proofs. For production use `scripts/ceremony.sh` (public phase 1, several independent contributors,
+1. **Trusted setup.** `zkvpn zk setup` is a *single-party* setup: whoever ran it can forge
+   proofs. For production use `zkvpn zk ceremony` (public phase 1, several independent contributors,
    public random beacon). Keys are sound if **at least one** contributor destroyed their entropy.
 2. **Server WireGuard key** must be pinned by clients out of band; it authenticates the server.
 3. **Open registration.** With an empty `ZKVPN_AUTHORIZED_IDENTITIES` any valid identity is admitted.
@@ -50,4 +55,4 @@ resource exhaustion beyond the connection limits, side channels, the circom/snar
    disabling, behaviour across crashes.
 4. `scripts/install.sh` and the systemd unit: privileges (`CAP_NET_ADMIN`), file permissions, the
    `curl | bash` path.
-5. The ceremony procedure (`scripts/ceremony.sh`) with real, independent participants.
+5. The ceremony procedure (`zkvpn zk ceremony`, `src/zkvpn/zk/ceremony.py`) with real, independent participants.

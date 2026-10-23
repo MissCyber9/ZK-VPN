@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONUTF8: "1"            # Windows runners default to a legacy code page
+  PYTHONIOENCODING: utf-8
+
 jobs:
   unit:
     # The portable core (ZK proofs, admission protocol, CLI, configuration, platform layer) on every OS

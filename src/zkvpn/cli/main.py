@@ -14,6 +14,15 @@ from pathlib import Path
 import click
 from dotenv import load_dotenv
 
+# Windows consoles default to a legacy code page that cannot print the ✓/✗ marks (and fail
+# outright when output is redirected): make the output streams UTF-8 everywhere.
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
 # Load environment variables
 from zkvpn.platform import paths as platform_paths
 

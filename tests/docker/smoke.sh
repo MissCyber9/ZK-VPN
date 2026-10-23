@@ -28,8 +28,8 @@ if [[ -n "${HTTPS_PROXY:-}" ]]; then   # cloud sandboxes: give the build the pro
     CA="${SSL_CERT_FILE:-/root/.ccr/ca-bundle.crt}"
     docker rm -f zkvpn-smoke-base-c >/dev/null 2>&1 || true
     docker run -d --name zkvpn-smoke-base-c -v "$CA:/mnt/ca.crt:ro" ubuntu:24.04 sleep 600 >/dev/null
-    docker exec zkvpn-smoke-base-c sh -c "
-        cp /mnt/ca.crt /etc/ssl/certs/ccr.crt
+    docker exec zkvpn-smoke-base-c sh -ec "
+        mkdir -p /etc/ssl/certs && cp /mnt/ca.crt /etc/ssl/certs/ccr.crt
         printf 'Acquire::https::Proxy \"http://$GW:42639\";\nAcquire::http::Proxy \"http://$GW:42639\";\nAcquire::https::CaInfo \"/etc/ssl/certs/ccr.crt\";\n' > /etc/apt/apt.conf.d/99proxy
         sed -i 's|http://|https://|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true"
     docker commit \

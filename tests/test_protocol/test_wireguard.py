@@ -208,11 +208,18 @@ class TestZKTunnel:
         tunnel = ZKTunnel(backend=LINUX)
         tunnel._is_connected = True
         tunnel._health_check_task = asyncio.create_task(asyncio.sleep(1))
-        
-        result = await tunnel.disconnect()
-        
+
+        # no real `ip` / `iptables` here: this test must pass on any machine
+        with patch.object(tunnel.routes, "disable", AsyncMock()) as routes, \
+             patch.object(tunnel.killswitch, "disable", AsyncMock()) as killswitch, \
+             patch.object(tunnel.nat, "disable", AsyncMock()) as nat:
+            result = await tunnel.disconnect()
+
         assert result is True
         assert tunnel._is_connected is False
+        routes.assert_awaited_once()
+        killswitch.assert_awaited_once()
+        nat.assert_awaited_once()
     
     @patch.object(WireGuardInterface, 'add_peer')
     async def test_add_client_requires_proof(self, mock_add_peer):

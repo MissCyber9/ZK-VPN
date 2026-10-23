@@ -175,7 +175,7 @@ class WindowsInterface(WireGuardInterface):
         write_private_file(conf, tunnel_config(self.private_key, self.listen_port), allow_system=True)
         try:
             rc, out, err = await run(exe, "/installtunnelservice", str(conf), timeout=60)
-            if rc != 0:
+            if rc != 0 and "already installed" not in (err or out):   # a previous one may still be stopping
                 raise RuntimeError(f"installtunnelservice failed: {(err or out).strip()}")
             for _ in range(100):                             # wait for the service to be up
                 if (await run("wg", "show", self.interface))[0] == 0:
@@ -210,9 +210,16 @@ class WindowsInterface(WireGuardInterface):
         exe = wireguard_exe()
         if not exe:
             raise RuntimeError("wireguard.exe not found")
-        rc, out, err = await run(exe, "/uninstalltunnelservice", check_name(self.interface), timeout=60)
-        if rc != 0:
+        if (await run("wg", "show", check_name(self.interface)))[0] != 0:
+            return                                           # already gone: removing twice is fine
+        rc, out, err = await run(exe, "/uninstalltunnelservice", self.interface, timeout=60)
+        if rc != 0 and "does not exist" not in (err or out):
             raise RuntimeError(f"uninstalltunnelservice failed: {(err or out).strip()}")
+        for _ in range(100):                                 # the service takes a moment to disappear
+            if (await run("wg", "show", self.interface))[0] != 0:
+                return
+            await asyncio.sleep(0.2)
+        raise RuntimeError("the WireGuard tunnel service did not stop")
 
 
 class WindowsRouteManager:
