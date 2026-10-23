@@ -12,7 +12,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 setup(
     name="zk-vpn",
     version="0.1.0",
-    description="Zero-Knowledge VPN prototype (WireGuard + Groth16 session authentication)",
+    description="WireGuard VPN with zero-knowledge (Groth16) client admission",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/MissCyber9/ZK-VPN",
