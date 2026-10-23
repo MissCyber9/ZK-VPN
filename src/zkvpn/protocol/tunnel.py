@@ -14,9 +14,8 @@ import logging
 from zkvpn.core.config import settings
 from zkvpn.core.memory import session_manager, memory_guard
 from zkvpn.protocol.admission import AdmissionServer, request_admission
-from zkvpn.protocol.killswitch import KillSwitch
-from zkvpn.protocol.routing import RouteManager, ServerNAT
-from zkvpn.protocol.wireguard import WireGuardInterface, WireGuardPeer, wg_interface
+from zkvpn.platform.net import SERVER, NetBackend, backend as default_backend
+from zkvpn.protocol.wireguard import WireGuardPeer
 from zkvpn.zk import SessionProof, SessionVerifier
 
 logger = logging.getLogger(__name__)
@@ -49,23 +48,35 @@ class TunnelConfig:
 class ZKTunnel:
     """VPN tunnel with ZK proof admission."""
 
-    def __init__(self, interface: Optional[WireGuardInterface] = None):
-        self.interface = interface or wg_interface
+    def __init__(self, interface: Optional[Any] = None, backend: Optional[NetBackend] = None):
+        """``backend`` provides the operating-system parts (default: the machine we run on)."""
+        self.backend = backend or default_backend
+        self.interface = interface or self.backend.make_interface(settings.wireguard_interface)
         self.config = TunnelConfig()
         self._health_check_task: Optional[asyncio.Task] = None
         self._is_connected = False
         self._current_session = None
         authorized = [i.strip() for i in settings.authorized_identities.split(",") if i.strip()]
         self.auth = SessionVerifier(authorized=authorized or None)
-        self.killswitch = KillSwitch(self.interface.interface)
-        self.routes = RouteManager(self.interface.interface)
-        self.nat = ServerNAT(self.interface.interface, self.config.network_cidr)
+        name = self.interface.interface
+        self.killswitch = self.backend.make_killswitch(name)
+        self.routes = self.backend.make_routes(name)
+        self.dns = self.backend.make_dns(name)
+        self.nat = (self.backend.make_nat(name, self.config.network_cidr)
+                    if self.backend.supports(SERVER) else None)
         self.admission: Optional[AdmissionServer] = None
         self.client_ips: Dict[str, str] = {}
         self._client_sessions: Dict[str, str] = {}
         self._admit_lock = asyncio.Lock()
 
         logger.info("ZK Tunnel initialized")
+
+    def _sync_names(self) -> None:
+        """The OS may rename the interface when it is created (macOS ``utunN``): tell the others."""
+        name = self.interface.interface
+        for component in (self.killswitch, self.routes, self.dns, self.nat):
+            if component is not None:
+                component.interface = name
 
     def _cidr(self, ip: str) -> str:
         return f"{ip}/{self.config.prefixlen}"
@@ -74,9 +85,12 @@ class ZKTunnel:
     async def start_server(self) -> bool:
         """Start the VPN server (and its admission endpoint)."""
         try:
+            if self.nat is None:
+                raise RuntimeError(f"the server role is not available on {self.backend.name}")
             if not self.interface.is_initialized:
                 # the server keeps a stable identity: the configured key, if any
                 await self.interface.configure_interface(settings.get_private_key())
+                self._sync_names()
 
             await self.interface.set_address(self._cidr(self.config.server_ip))
             await self._enable_ip_forwarding()
@@ -97,7 +111,8 @@ class ZKTunnel:
             if self.admission:
                 await self.admission.stop()
                 self.admission = None
-            await self.nat.disable()
+            if self.nat is not None:
+                await self.nat.disable()
             return False
 
     @memory_guard("tunnel_connect")
@@ -118,6 +133,7 @@ class ZKTunnel:
         try:
             if not self.interface.is_initialized:
                 await self.interface.configure_interface()
+                self._sync_names()
 
             if identity_sk is not None:
                 host = peer_endpoint.rpartition(":")[0].strip("[]")
@@ -173,7 +189,8 @@ class ZKTunnel:
             # Explicit disconnect: restore normal routing/traffic, drop server rules
             await self.routes.disable()
             await self.killswitch.disable()
-            await self.nat.disable()
+            if self.nat is not None:
+                await self.nat.disable()
 
             await self.interface.delete_interface()
 
@@ -248,12 +265,9 @@ class ZKTunnel:
             session_manager.delete_session(session_id)
         return removed
 
-    async def _bring_up(self, interface: str) -> None:
-        """Make sure the link is up (idempotent)."""
-        proc = await asyncio.create_subprocess_exec(
-            "ip", "link", "set", interface, "up",
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        await proc.wait()
+    async def _bring_up(self, interface: str = None) -> None:
+        """Make sure the link is up (idempotent, per operating system)."""
+        await self.interface.bring_up()
 
     async def _health_check(self):
         """Periodic health check."""
@@ -306,13 +320,27 @@ class ZKTunnel:
             "public_key": self.interface.public_key,
             "has_session": self._current_session is not None,
             "killswitch": self.killswitch.active,
-            "nat": self.nat.active,
+            "nat": bool(self.nat and self.nat.active),
             "clients": len(self.client_ips),
         }
 
 
+class _LazyTunnel:
+    """Global tunnel, created on first use so importing never touches the operating system."""
+
+    _instance: Optional[ZKTunnel] = None
+
+    def _get(self) -> ZKTunnel:
+        if self._instance is None:
+            self._instance = ZKTunnel()
+        return self._instance
+
+    def __getattr__(self, item):
+        return getattr(self._get(), item)
+
+
 # Global tunnel instance
-tunnel = ZKTunnel()
+tunnel = _LazyTunnel()
 
 
 __all__ = ["ZKTunnel", "TunnelConfig", "tunnel"]

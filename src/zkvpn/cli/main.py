@@ -15,7 +15,9 @@ import click
 from dotenv import load_dotenv
 
 # Load environment variables
-env_file = Path("/etc/zkvpn/.env")
+from zkvpn.platform import paths as platform_paths
+
+env_file = platform_paths.env_file()
 try:
     if env_file.exists():
         load_dotenv(env_file)
@@ -29,6 +31,7 @@ from zkvpn.cli.commands import (
     connect, disconnect, serve, status, identity, config,
     peer, test, version, help
 )
+from zkvpn.cli.zk_commands import doctor, zk
 from zkvpn.cli.utils import console, print_error
 
 
@@ -83,6 +86,8 @@ cli.add_command(async_command(identity))
 cli.add_command(async_command(config))
 cli.add_command(async_command(peer))
 cli.add_command(async_command(test))
+cli.add_command(async_command(zk))
+cli.add_command(doctor)
 cli.add_command(version)
 cli.add_command(help)
 

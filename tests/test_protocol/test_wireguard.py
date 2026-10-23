@@ -8,6 +8,9 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from zkvpn.protocol.wireguard import WireGuardInterface, WireGuardPeer, wg_interface, parse_wg_show
 from zkvpn.protocol.tunnel import ZKTunnel, tunnel
 from zkvpn.protocol.dns import DNSProtector, dns_protector
+from zkvpn.platform.net import get_backend
+
+LINUX = get_backend("linux")      # these tests exercise the Linux server role on any runner
 
 # Valid 44-char base64 WireGuard-style keys
 PUB1 = "A" * 43 + "="
@@ -161,7 +164,7 @@ class TestZKTunnel:
         mock_configure.return_value = True
         mock_set_addr.return_value = True
         
-        tunnel = ZKTunnel()
+        tunnel = ZKTunnel(backend=LINUX)
         
         with patch.object(tunnel, '_enable_ip_forwarding') as mock_forward, \
              patch('zkvpn.protocol.tunnel.AdmissionServer.start', AsyncMock()) as admission, \
@@ -185,7 +188,7 @@ class TestZKTunnel:
         mock_set_addr.return_value = True
         mock_add_peer.return_value = True
         
-        tunnel = ZKTunnel()
+        tunnel = ZKTunnel(backend=LINUX)
         
         with patch.object(tunnel.killswitch, 'enable', AsyncMock(return_value=True)) as ks, \
              patch.object(tunnel.routes, 'enable', AsyncMock(return_value=True)), \
@@ -202,7 +205,7 @@ class TestZKTunnel:
         """Test disconnection."""
         mock_delete.return_value = True
         
-        tunnel = ZKTunnel()
+        tunnel = ZKTunnel(backend=LINUX)
         tunnel._is_connected = True
         tunnel._health_check_task = asyncio.create_task(asyncio.sleep(1))
         
@@ -215,7 +218,7 @@ class TestZKTunnel:
     async def test_add_client_requires_proof(self, mock_add_peer):
         """By default a client without a ZK session proof is refused."""
         mock_add_peer.return_value = True
-        tunnel = ZKTunnel()
+        tunnel = ZKTunnel(backend=LINUX)
 
         assert await tunnel.add_client(PUB3) is False
         mock_add_peer.assert_not_called()
@@ -224,7 +227,7 @@ class TestZKTunnel:
     async def test_add_client_rejects_invalid_proof(self, mock_add_peer):
         from zkvpn.zk import SessionProof, VerifyResult
         mock_add_peer.return_value = True
-        tunnel = ZKTunnel()
+        tunnel = ZKTunnel(backend=LINUX)
         proof = SessionProof({}, [])
 
         with patch.object(tunnel.auth, 'verify',
@@ -236,7 +239,7 @@ class TestZKTunnel:
     async def test_add_client_with_valid_proof(self, mock_add_peer):
         from zkvpn.zk import SessionProof, VerifyResult
         mock_add_peer.return_value = True
-        tunnel = ZKTunnel()
+        tunnel = ZKTunnel(backend=LINUX)
         proof = SessionProof({}, [])
 
         with patch.object(tunnel.auth, 'verify',
@@ -248,7 +251,7 @@ class TestZKTunnel:
     @patch.object(WireGuardInterface, 'add_peer')
     async def test_add_client_proof_optional_when_disabled(self, mock_add_peer):
         mock_add_peer.return_value = True
-        tunnel = ZKTunnel()
+        tunnel = ZKTunnel(backend=LINUX)
 
         with patch('zkvpn.protocol.tunnel.settings.require_client_proof', False), \
              patch.object(tunnel, '_assign_client_ip', AsyncMock(return_value="10.0.0.10")):
@@ -459,7 +462,7 @@ class TestKillSwitch:
 
 class TestRemoveClient:
     async def test_remove_client_keeps_server_running(self):
-        tunnel = ZKTunnel()
+        tunnel = ZKTunnel(backend=LINUX)
         tunnel._client_sessions[PUB3] = "sess"
         with patch.object(WireGuardInterface, 'remove_peer', AsyncMock(return_value=True)), \
              patch.object(WireGuardInterface, 'delete_interface', AsyncMock()) as delete:
@@ -543,7 +546,7 @@ class TestKeyHandling:
         key = "S" * 43 + "="
         from zkvpn.core.config import settings
         monkeypatch.setattr(settings, "private_key", SecretStr(key))
-        tunnel = ZKTunnel(WireGuardInterface("test0"))      # not the shared global interface
+        tunnel = ZKTunnel(WireGuardInterface("test0"), backend=LINUX)      # not the shared global interface
         with patch.object(WireGuardInterface, "configure_interface", AsyncMock(return_value=True)) as cfg, \
              patch.object(WireGuardInterface, "set_address", AsyncMock(return_value=True)), \
              patch.object(tunnel, "_enable_ip_forwarding", AsyncMock()), \

@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from zkvpn.core.config import settings
+from zkvpn.platform.fsperm import ensure_private_dir, replace_private_file
 
 logger = logging.getLogger(__name__)
 
@@ -86,10 +87,8 @@ class DNSProtector:
             return None
 
     def _save_state(self, state: Dict) -> None:
-        self._state_file.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-        fd = os.open(self._state_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(state, f)
+        ensure_private_dir(self._state_file.parent)
+        replace_private_file(self._state_file, json.dumps(state))
 
     def _clear_state(self) -> None:
         try:

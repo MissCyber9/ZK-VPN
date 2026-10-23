@@ -15,14 +15,10 @@ from functools import lru_cache
 from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from zkvpn.platform import paths as platform_paths
+
 # Configure module logger
 logger = logging.getLogger(__name__)
-
-
-def _default_zk_dir() -> str:
-    """``<repo>/zk`` for source checkouts / editable installs, else ``./zk``."""
-    candidate = Path(__file__).resolve().parents[3] / "zk"
-    return str(candidate) if candidate.is_dir() else "./zk"
 
 
 class Settings(BaseSettings):
@@ -80,7 +76,7 @@ class Settings(BaseSettings):
         description="WireGuard interface name"
     )
     wireguard_config_dir: str = Field(
-        "/etc/wireguard",
+        default_factory=lambda: str(platform_paths.wireguard_config_dir()),
         description="Directory for WireGuard configuration"
     )
     private_key: Optional[SecretStr] = Field(
@@ -112,20 +108,20 @@ class Settings(BaseSettings):
         description="How the resolver is configured (auto-detected: systemd-resolved, resolvconf, or resolv.conf)"
     )
     state_dir: str = Field(
-        "/run/zkvpn",
+        default_factory=lambda: str(platform_paths.state_dir()),
         description="RAM-backed directory (tmpfs) holding what is needed to undo network changes across processes"
     )
     dns_protection_enabled: bool = Field(
         True,
-        description="Client rewrites /etc/resolv.conf and blocks DNS outside the tunnel"
+        description="Client points DNS at the tunnel and blocks DNS outside it"
     )
     killswitch_enabled: bool = Field(
         True,
         description="Block all non-tunnel traffic while connected as a client"
     )
     zk_dir: str = Field(
-        default_factory=lambda: _default_zk_dir(),
-        description="Directory with the ZK toolchain and build/ artifacts (scripts/setup_circuits.sh)"
+        default_factory=lambda: str(platform_paths.zk_dir()),
+        description="Directory with the ZK toolchain and build/ artifacts (create it with `zkvpn zk setup`)"
     )
     require_client_proof: bool = Field(
         True,

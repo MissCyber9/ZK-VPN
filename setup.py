@@ -24,6 +24,9 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Topic :: Security :: Cryptography",
         "Programming Language :: Python :: 3",
+        "Operating System :: POSIX :: Linux",
+        "Operating System :: MacOS",
+        "Operating System :: Microsoft :: Windows",
     ],
     license="MIT",
     python_requires=">=3.9",
@@ -34,5 +37,5 @@ setup(
         ],
     },
     include_package_data=True,
-    package_data={"zkvpn": ["circuits/*.circom"]},
+    package_data={"zkvpn": ["circuits/*.circom", "zk/node/*"]},
 )

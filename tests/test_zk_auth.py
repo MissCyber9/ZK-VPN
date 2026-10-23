@@ -1,15 +1,18 @@
-"""Tests for the real Groth16 session-auth proofs (need `scripts/setup_circuits.sh`)."""
+"""Tests for the real Groth16 session-auth proofs (need `zkvpn zk setup`)."""
 
 import copy
 
 import pytest
 
+from zkvpn.platform.net import get_backend
 from zkvpn.zk import (SessionProver, SessionVerifier, SnarkBackend, SnarkError,
                       generate_identity)
 
+LINUX = get_backend("linux")      # the tunnel test exercises the Linux server role on any runner
+
 backend = SnarkBackend()
 pytestmark = pytest.mark.skipif(
-    not backend.available, reason="run scripts/setup_circuits.sh first")
+    not backend.available, reason="run `zkvpn zk setup` first")
 
 WG = "A" * 43 + "="
 OTHER_WG = "B" * 43 + "="
@@ -132,7 +135,7 @@ async def test_tunnel_admits_client_with_real_proof():
     from zkvpn.protocol.tunnel import ZKTunnel
     from zkvpn.protocol.wireguard import WireGuardInterface
 
-    tunnel = ZKTunnel()
+    tunnel = ZKTunnel(backend=LINUX)
     prover = SessionProver(backend)
     nonce = tunnel.issue_challenge()
     proof = await prover.prove(generate_identity(), nonce, WG)

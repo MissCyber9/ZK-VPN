@@ -25,12 +25,15 @@ from rich.table import Table
 from rich import box
 
 from zkvpn.core.config import settings, get_settings
+from zkvpn.platform import paths as platform_paths
+from zkvpn.platform.fsperm import replace_private_file
+from zkvpn.platform.process import wait_for_shutdown
+from zkvpn.platform.net import backend as net_backend
 from zkvpn.core.memory import session_manager, key_store
 from zkvpn.zk import (SessionProver, SessionVerifier, generate_identity, load_identity,
                       public_identity, save_identity)
 from zkvpn.protocol.tunnel import tunnel, TunnelConfig
-from zkvpn.protocol.wireguard import wg_interface, WireGuardPeer
-from zkvpn.protocol.dns import dns_protector
+from zkvpn.protocol.wireguard import WireGuardPeer
 from zkvpn.cli.utils import (
     console, print_success, print_error, print_warning, print_info,
     print_table, print_json, format_bytes, format_duration,
@@ -69,7 +72,7 @@ async def connect(peer: Optional[str], endpoint: Optional[str],
             
             if success:
                 # Generate QR code for easy client config
-                wg_status = await wg_interface.get_status()
+                wg_status = await tunnel.interface.get_status()
                 pubkey = wg_status.get('public_key')
                 endpoint_ip = await _get_public_ip()
                 
@@ -118,7 +121,7 @@ async def connect(peer: Optional[str], endpoint: Optional[str],
                 console.print(f"[cyan]Kill-switch:[/cyan] {'on' if status['killswitch'] else 'off'}")
                 
                 if settings.dns_protection_enabled:
-                    await dns_protector.enable_protection()
+                    await tunnel.dns.enable_protection()
                     print_success("DNS leak protection enabled")
             else:
                 print_error("Connection failed")
@@ -132,18 +135,18 @@ async def connect(peer: Optional[str], endpoint: Optional[str],
 @click.command()
 async def serve():
     """Run the VPN server in the foreground until SIGTERM/SIGINT (systemd entry point)."""
-    import signal
+    if not net_backend.supports("server"):
+        print_error(f"The server role is not available on {net_backend.name}: "
+                    "run it on Linux or in the Docker image (see README).")
+        raise SystemExit(2)
 
     if not await tunnel.start_server():
         print_error("Failed to start server")
         raise SystemExit(1)
 
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, stop.set)
     print_info("ZK-VPN server running (Ctrl+C to stop)")
-    await stop.wait()
+    print_info(f"Server WireGuard public key (give it to clients): {tunnel.interface.public_key}")
+    await wait_for_shutdown()
     await tunnel.disconnect()
 
 
@@ -154,7 +157,7 @@ async def disconnect():
         print_info("Disconnecting...")
         
         if settings.dns_protection_enabled:
-            await dns_protector.disable_protection()
+            await tunnel.dns.disable_protection()
         
         # Disconnect tunnel
         success = await tunnel.disconnect()
@@ -180,10 +183,10 @@ async def status(watch: bool, json_output: bool):
     if json_output:
         status_data = {
             "tunnel": tunnel.get_status(),
-            "wireguard": await wg_interface.get_status(),
+            "wireguard": await tunnel.interface.get_status(),
             "dns": {
-                "protected": dns_protector.is_protected,
-                "servers": await dns_protector._get_current_dns_servers()
+                "protected": tunnel.dns.is_protected,
+                "servers": await tunnel.dns._get_current_dns_servers()
             }
         }
         print_json(status_data)
@@ -199,7 +202,7 @@ async def _show_status():
     """Show single status view."""
     # Tunnel status
     tunnel_status = tunnel.get_status()
-    wg_status = await wg_interface.get_status()
+    wg_status = await tunnel.interface.get_status()
     
     # Header
     console.rule("[bold cyan]ZK-VPN Status[/bold cyan]")
@@ -245,9 +248,9 @@ async def _show_status():
     
     # DNS status
     console.print("\n[bold cyan]🌐 DNS Protection[/bold cyan]")
-    if dns_protector.is_protected:
+    if tunnel.dns.is_protected:
         console.print("  Status: [green]Protected[/green]")
-        dns_servers = await dns_protector._get_current_dns_servers()
+        dns_servers = await tunnel.dns._get_current_dns_servers()
         console.print(f"  DNS Servers: {', '.join(dns_servers)}")
     else:
         console.print("  Status: [red]Not Protected[/red]")
@@ -271,7 +274,7 @@ async def _watch_status():
             
             # Body
             tunnel_status = tunnel.get_status()
-            wg_status = await wg_interface.get_status()
+            wg_status = await tunnel.interface.get_status()
             
             status_table = Table(box=box.SIMPLE)
             status_table.add_column("Component", style="cyan")
@@ -297,8 +300,8 @@ async def _watch_status():
             # DNS
             status_table.add_row(
                 "DNS",
-                f"[{'green' if dns_protector.is_protected else 'red'}]{'Protected' if dns_protector.is_protected else 'Leaking'}[/]",
-                f"Servers: {', '.join(await dns_protector._get_current_dns_servers())[:30]}..."
+                f"[{'green' if tunnel.dns.is_protected else 'red'}]{'Protected' if tunnel.dns.is_protected else 'Leaking'}[/]",
+                f"Servers: {', '.join(await tunnel.dns._get_current_dns_servers())[:30]}..."
             )
             
             layout["body"].update(Panel(status_table, title="System Status"))
@@ -386,7 +389,7 @@ def config_set(key: str, value: str):
         print_error(str(e))
         raise SystemExit(1)
 
-    env_file = Path("/etc/zkvpn/.env")
+    env_file = platform_paths.env_file()
     env_file.parent.mkdir(parents=True, exist_ok=True)
     lines = env_file.read_text().splitlines() if env_file.exists() else []
 
@@ -399,11 +402,7 @@ def config_set(key: str, value: str):
         lines.append(entry)
 
     # Atomic write, owner-only permissions (the file may hold secrets)
-    tmp = env_file.with_name(env_file.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write("\n".join(lines) + "\n")
-    os.replace(tmp, env_file)
+    replace_private_file(env_file, "\n".join(lines) + "\n")
 
     print_success(f"Configuration updated: {var}")
     print_warning("Restart service to apply changes")
@@ -413,7 +412,7 @@ def config_set(key: str, value: str):
 @click.confirmation_option(prompt='Reset all configuration?')
 def config_reset():
     """Reset configuration to defaults."""
-    env_file = Path("/etc/zkvpn/.env")
+    env_file = platform_paths.env_file()
     if env_file.exists():
         env_file.unlink()
     
@@ -436,7 +435,7 @@ def config_export(format: str):
     
     elif format == 'qr':
         # Generate QR code with connection info
-        wg_status = asyncio.run(wg_interface.get_status())
+        wg_status = asyncio.run(tunnel.interface.get_status())
         pubkey = wg_status.get('public_key')
         if pubkey:
             qr_data = f"{settings.host}:{settings.port}:{pubkey}"
@@ -471,7 +470,7 @@ async def peer_add(public_key: str, ip: Optional[str], endpoint: Optional[str]):
             allowed_ips=[f"{ip}/32"] if ip else None
         )
         
-        success = await wg_interface.add_peer(peer)
+        success = await tunnel.interface.add_peer(peer)
         
         if success:
             print_success(f"Added peer {public_key[:16]}...")
@@ -488,7 +487,7 @@ async def peer_add(public_key: str, ip: Optional[str], endpoint: Optional[str]):
 @click.argument('public_key')
 async def peer_remove(public_key: str):
     """Remove a peer."""
-    success = await wg_interface.remove_peer(public_key)
+    success = await tunnel.interface.remove_peer(public_key)
     
     if success:
         print_success(f"Removed peer {public_key[:16]}...")
@@ -499,7 +498,7 @@ async def peer_remove(public_key: str):
 @peer.command(name="list")
 async def peer_list():
     """List all peers."""
-    status = await wg_interface.get_status()
+    status = await tunnel.interface.get_status()
     
     if not status.get('peers'):
         print_info("No peers connected")
@@ -540,7 +539,7 @@ async def test_leak():
     print_info("Testing for leaks...")
     
     with console.status("[bold cyan]Running leak tests...") as status:
-        results = await dns_protector.test_leaks()
+        results = await tunnel.dns.test_leaks()
     
     console.print("\n[bold cyan]📊 Leak Test Results[/bold cyan]")
     
@@ -579,7 +578,7 @@ async def test_speed(duration: int):
     print_info(f"Running speed test for {duration} seconds...")
     
     # Get initial stats
-    status = await wg_interface.get_status()
+    status = await tunnel.interface.get_status()
     initial_rx = 0
     initial_tx = 0
     
@@ -592,7 +591,7 @@ async def test_speed(duration: int):
         await asyncio.sleep(duration)
     
     # Get final stats
-    status = await wg_interface.get_status()
+    status = await tunnel.interface.get_status()
     final_rx = 0
     final_tx = 0
     

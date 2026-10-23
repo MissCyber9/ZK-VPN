@@ -46,3 +46,26 @@ dist/
 # ZK toolchain and build output
 zk/node_modules/
 zk/build/
+
+# Secrets and local configuration: never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.zkey
+*.ptau
+*.conf.dpapi
+.zkvpn-identity
+ceremony/
+*.bundle
+
+# Tooling output
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+Thumbs.db
+*:Zone.Identifier

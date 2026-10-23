@@ -226,72 +226,10 @@ class WireGuardInterface:
         else:
             self.generate_keypair()
         
-        # Create interface if it doesn't exist
         try:
-            # Check if interface exists
-            result = await asyncio.to_thread(subprocess.run,
-                ["ip", "link", "show", self.interface],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if result.returncode != 0:
-                # Create interface: kernel module first, wireguard-go as fallback
-                kernel = await asyncio.to_thread(subprocess.run,
-                    ["ip", "link", "add", self.interface, "type", "wireguard"],
-                    capture_output=True,
-                    timeout=5
-                )
-                if kernel.returncode == 0:
-                    logger.info(f"Created kernel interface {self.interface}")
-                else:
-                    userspace = shutil.which("wireguard-go")
-                    if not userspace:
-                        raise RuntimeError(
-                            "Kernel WireGuard unavailable and wireguard-go not installed")
-                    await asyncio.to_thread(subprocess.run,
-                        [userspace, self.interface],
-                        check=True,
-                        capture_output=True,
-                        timeout=15
-                    )
-                    logger.info(f"Created userspace interface {self.interface} (wireguard-go)")
-            
-            # Configure WireGuard
-            config_cmd = [
-                "wg", "set", self.interface,
-                "private-key", "/dev/stdin",  # Read from stdin (no disk write)
-                "listen-port", str(self.listen_port)
-            ]
-            
-            proc = await asyncio.create_subprocess_exec(
-                *config_cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await proc.communicate(input=self.private_key.encode())
-            
-            if proc.returncode != 0:
-                raise RuntimeError(f"Failed to configure WireGuard: {stderr.decode()}")
-            
-            # Bring interface up
-            await asyncio.to_thread(subprocess.run,
-                ["ip", "link", "set", self.interface, "up"],
-                check=True,
-                capture_output=True,
-                timeout=5
-            )
-            
-            # Assign IP address
-            await asyncio.to_thread(subprocess.run,
-                ["ip", "addr", "add", self.address, "dev", self.interface],
-                capture_output=True,
-                timeout=5
-            )  # Don't check return code - address might already exist
-            
+            await self._create_link()
+            await self._apply_settings()
+
             self._initialized = True
             logger.info(f"WireGuard interface {self.interface} configured successfully")
             return True
@@ -304,6 +242,107 @@ class WireGuardInterface:
             logger.error(f"Failed to configure WireGuard: {e}")
             return False
     
+    # ------------------------------------------------------------------
+    # Operating-system hooks. This implementation is Linux (kernel module, or
+    # wireguard-go as fallback); macOS and Windows override them
+    # (see zkvpn.platform.net).
+    # ------------------------------------------------------------------
+    async def _create_link(self) -> None:
+        """Create the WireGuard network interface if it does not exist yet."""
+        result = await asyncio.to_thread(subprocess.run,
+            ["ip", "link", "show", self.interface],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            return
+        # kernel module first, wireguard-go (userspace) as fallback
+        kernel = await asyncio.to_thread(subprocess.run,
+            ["ip", "link", "add", self.interface, "type", "wireguard"],
+            capture_output=True,
+            timeout=5
+        )
+        if kernel.returncode == 0:
+            logger.info(f"Created kernel interface {self.interface}")
+            return
+        userspace = shutil.which("wireguard-go")
+        if not userspace:
+            raise RuntimeError("Kernel WireGuard unavailable and wireguard-go not installed")
+        await asyncio.to_thread(subprocess.run,
+            [userspace, self.interface],
+            check=True,
+            capture_output=True,
+            timeout=15
+        )
+        logger.info(f"Created userspace interface {self.interface} (wireguard-go)")
+
+    async def _apply_settings(self) -> None:
+        """Load the private key and listen port, then bring the link up."""
+        await self._load_key()
+        await self._activate()
+
+    async def _load_key(self) -> None:
+        """Load the private key and listen port into the running interface (``wg set``)."""
+        config_cmd = [
+            "wg", "set", self.interface,
+            "private-key", "/dev/stdin",  # Read from stdin (no disk write)
+            "listen-port", str(self.listen_port)
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *config_cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate(input=self.private_key.encode())
+        if proc.returncode != 0:
+            raise RuntimeError(f"Failed to configure WireGuard: {stderr.decode()}")
+
+    async def _activate(self) -> None:
+        """Bring the link up and give it its initial address."""
+        await asyncio.to_thread(subprocess.run,
+            ["ip", "link", "set", self.interface, "up"],
+            check=True,
+            capture_output=True,
+            timeout=5
+        )
+        await asyncio.to_thread(subprocess.run,
+            ["ip", "addr", "add", self.address, "dev", self.interface],
+            capture_output=True,
+            timeout=5
+        )  # Don't check return code - address might already exist
+
+    async def bring_up(self) -> None:
+        """Make sure the link is up (idempotent)."""
+        await asyncio.to_thread(subprocess.run,
+            ["ip", "link", "set", self.interface, "up"],
+            capture_output=True,
+            timeout=5
+        )
+
+    async def _assign_address(self, address: str) -> None:
+        """Replace the interface addresses by ``address`` (CIDR)."""
+        await asyncio.to_thread(subprocess.run,
+            ["ip", "addr", "flush", "dev", self.interface],
+            capture_output=True,
+            timeout=5
+        )
+        await asyncio.to_thread(subprocess.run,
+            ["ip", "addr", "add", address, "dev", self.interface],
+            check=True,
+            capture_output=True,
+            timeout=5
+        )
+
+    async def _remove_link(self) -> None:
+        await asyncio.to_thread(subprocess.run,
+            ["ip", "link", "delete", self.interface],
+            check=True,
+            capture_output=True,
+            timeout=5
+        )
+
     @memory_guard("wireguard_add_peer")
     async def add_peer(self, peer: WireGuardPeer) -> bool:
         """Add or update a peer.
@@ -407,21 +446,8 @@ class WireGuardInterface:
             bool: True if successful
         """
         try:
-            # Remove existing addresses
-            await asyncio.to_thread(subprocess.run,
-                ["ip", "addr", "flush", "dev", self.interface],
-                capture_output=True,
-                timeout=5
-            )
-            
-            # Add new address
-            await asyncio.to_thread(subprocess.run,
-                ["ip", "addr", "add", address, "dev", self.interface],
-                check=True,
-                capture_output=True,
-                timeout=5
-            )
-            
+            await self._assign_address(address)
+
             self.address = address
             logger.info(f"Set interface address to {address}")
             return True
@@ -437,13 +463,8 @@ class WireGuardInterface:
             bool: True if successful
         """
         try:
-            await asyncio.to_thread(subprocess.run,
-                ["ip", "link", "delete", self.interface],
-                check=True,
-                capture_output=True,
-                timeout=5
-            )
-            
+            await self._remove_link()
+
             self._initialized = False
             logger.info(f"Deleted interface {self.interface}")
             return True

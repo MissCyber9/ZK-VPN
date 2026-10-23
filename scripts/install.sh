@@ -113,7 +113,7 @@ get_code() {
         [[ -d "${SOURCE_DIR}/src" ]] || error "ZKVPN_SOURCE_DIR=${SOURCE_DIR} has no src/"
         # copy the tree (no .git, no build output, no caches)
         tar -C "$SOURCE_DIR" --exclude=.git --exclude=node_modules --exclude=__pycache__ \
-            --exclude='*.egg-info' --exclude=zk/build -cf - . | tar -C "$INSTALL_DIR" -xf -
+            --exclude='*.egg-info' -cf - . | tar -C "$INSTALL_DIR" -xf -
     elif [[ -d "${INSTALL_DIR}/.git" ]]; then
         git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH" >> "$LOG_FILE" 2>&1 \
             || warn "git pull failed, continuing with existing code"
@@ -138,9 +138,9 @@ setup_venv() {
 
 build_circuits() {
     info "Building ZK circuit (about a minute)..."
-    "${INSTALL_DIR}/scripts/setup_circuits.sh" >> "$LOG_FILE" 2>&1 \
-        || error "ZK circuit build failed (run ${INSTALL_DIR}/scripts/setup_circuits.sh to see why)"
-    warn "ZK keys come from a SINGLE-PARTY development setup; use scripts/ceremony.sh for production"
+    "${VENV_DIR}/bin/zkvpn" zk setup --dir "${INSTALL_DIR}/zk" >> "$LOG_FILE" 2>&1 \
+        || error "ZK circuit build failed (run '${VENV_DIR}/bin/zkvpn zk setup --dir ${INSTALL_DIR}/zk' to see why)"
+    warn "ZK keys come from a SINGLE-PARTY development setup; use 'zkvpn zk ceremony' for production"
     chmod -R a+rX "${INSTALL_DIR}/zk"
     success "ZK circuit built"
 }

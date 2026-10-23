@@ -69,7 +69,7 @@ elif not (shutil.which("wg") and shutil.which("iptables") and shutil.which("ip6t
 elif not _have_wireguard():
     _SKIP = "needs kernel WireGuard or wireguard-go"
 elif not SnarkBackend().available:
-    _SKIP = "run scripts/setup_circuits.sh first"
+    _SKIP = "run `zkvpn zk setup` first"
 if _SKIP:
     pytestmark = [pytest.mark.e2e, pytest.mark.skip(reason=_SKIP)]
 

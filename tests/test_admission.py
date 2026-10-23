@@ -12,9 +12,12 @@ from zkvpn.protocol.admission import AdmissionError, AdmissionServer, request_ad
 from zkvpn.protocol.tunnel import ZKTunnel
 from zkvpn.protocol.wireguard import WireGuardInterface
 from zkvpn.zk import (SnarkBackend, generate_identity, load_identity, save_identity)
+from zkvpn.platform.net import get_backend
+
+LINUX = get_backend("linux")      # these tests exercise the Linux server role on any runner
 
 needs_zk = pytest.mark.skipif(not SnarkBackend().available,
-                              reason="run scripts/setup_circuits.sh first")
+                              reason="run `zkvpn zk setup` first")
 
 WG1 = "A" * 43 + "="
 WG2 = "B" * 43 + "="
@@ -22,7 +25,7 @@ WG2 = "B" * 43 + "="
 
 @pytest.fixture
 async def server():
-    tunnel = ZKTunnel()
+    tunnel = ZKTunnel(backend=LINUX)
     ips = iter(["10.0.0.2", "10.0.0.3", "10.0.0.4"])
     with patch.object(WireGuardInterface, "add_peer", AsyncMock(return_value=True)), \
          patch.object(tunnel, "_assign_client_ip", AsyncMock(side_effect=lambda: next(ips))):
@@ -116,7 +119,7 @@ async def test_silent_client_times_out(server):
 @needs_zk
 async def test_connect_uses_server_assigned_ip(server):
     tunnel, srv = server
-    client = ZKTunnel()
+    client = ZKTunnel(backend=LINUX)
     client.interface.public_key = WG1
     client.interface._initialized = True
     with patch.object(WireGuardInterface, "add_peer", AsyncMock(return_value=True)), \
@@ -133,7 +136,7 @@ async def test_connect_uses_server_assigned_ip(server):
 
 async def test_connect_fails_closed_when_admission_refused(server):
     tunnel, srv = server
-    client = ZKTunnel()
+    client = ZKTunnel(backend=LINUX)
     client.interface._initialized = True
     client.interface.public_key = WG1
     with patch.object(WireGuardInterface, "add_peer", AsyncMock()) as add_peer, \
