@@ -162,7 +162,10 @@ class V6(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
 socketserver.ThreadingTCPServer.allow_reuse_address = True
 if %(have_v6)s:
-    threading.Thread(target=V6(('%(v6)s', %(port)d), H).serve_forever, daemon=True).start()
+    try:
+        threading.Thread(target=V6(('%(v6)s', %(port)d), H).serve_forever, daemon=True).start()
+    except OSError as e:
+        print('IPv6 listener failed:', e, flush=True)
 socketserver.ThreadingTCPServer(('%(v4)s', %(port)d), H).serve_forever()
 """ % {"v4": WEB_IP, "v6": WEB_IP6, "port": WEB_PORT, "have_v6": HAVE_V6}
 
@@ -224,7 +227,9 @@ def _build_topology(procs):
     if HAVE_V6:   # IPv6 world: client <-> ISP <-> web (the server has none: the tunnel is IPv4-only)
         for ns, ifn, addr in ((CLI, "c0", CLI_IP6 + "/64"), (ISP, "i-c", "fd00:9::254/64"),
                               (WEB, "w0", WEB_IP6 + "/64"), (ISP, "i-w", "fd00:2::254/64")):
-            sh("ip", "-6", "addr", "add", addr, "dev", ifn, ns=ns)
+            # nodad: skip duplicate-address detection, otherwise the address stays "tentative"
+            # for ~1s and binding a server to it fails
+            sh("ip", "-6", "addr", "add", addr, "dev", ifn, "nodad", ns=ns)
         sh("ip", "-6", "route", "add", "default", "via", "fd00:9::254", ns=CLI)
         sh("ip", "-6", "route", "add", "default", "via", "fd00:2::254", ns=WEB)
         sh("sysctl", "-qw", "net.ipv6.conf.all.forwarding=1", ns=ISP)
@@ -238,8 +243,15 @@ def _build_topology(procs):
         procs.append(subprocess.Popen(
             ["ip", "netns", "exec", ns, sys.executable, "-c", code],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-    wait_for(lambda: probe(1) is not None and (not HAVE_V6 or probe(1, v6=True) is not None),
-             15, "direct paths to the web site")
+    try:
+        wait_for(lambda: probe(1) is not None, 15, "direct IPv4 path to the web site")
+        if HAVE_V6:
+            wait_for(lambda: probe(1, v6=True) is not None, 15, "direct IPv6 path to the web site")
+    except AssertionError as e:
+        diag = [sh("ip", "-6", "addr", ns=WEB, check=False).stdout,
+                sh("ip", "-6", "route", ns=CLI, check=False).stdout,
+                sh("ss", "-ltn", ns=WEB, check=False).stdout]
+        raise AssertionError(f"{e}\n--- web v6 addrs / client v6 routes / web listeners ---\n" + "\n".join(diag))
     yield
 
 

@@ -42,22 +42,47 @@ class TestWireGuardInterface:
     @patch('subprocess.run')
     @patch('asyncio.create_subprocess_exec')
     async def test_configure_interface(self, mock_subproc, mock_run):
-        """Test interface configuration."""
+        """Test interface configuration (independent of which WireGuard tools are installed)."""
         mock_subproc.return_value.communicate.return_value = (b"", b"")
         mock_subproc.return_value.returncode = 0
-        
+
+        def fake_run(cmd, **kwargs):
+            result = MagicMock()
+            result.stdout = ""
+            # `ip link show` -> interface absent; everything else (incl. `ip link add ... wireguard`) works
+            result.returncode = 1 if cmd[:3] == ["ip", "link", "show"] else 0
+            return result
+
+        mock_run.side_effect = fake_run
         wg = WireGuardInterface("test0")
-        
+
         def fake_keypair():
             wg.private_key, wg.public_key = "priv", "pub"
             return "priv", "pub"
 
         with patch.object(wg, 'generate_keypair', side_effect=fake_keypair):
             result = await wg.configure_interface()
-            
+
             assert result is True
             assert wg._initialized is True
-    
+
+    @patch('shutil.which', return_value=None)
+    @patch('subprocess.run')
+    @patch('asyncio.create_subprocess_exec')
+    async def test_no_kernel_module_and_no_wireguard_go_is_a_clear_error(self, mock_subproc, mock_run, _which):
+        mock_subproc.return_value.communicate.return_value = (b"", b"")
+
+        def fake_run(cmd, **kwargs):
+            result = MagicMock()
+            result.stdout = ""
+            result.returncode = 1 if cmd[:3] in (["ip", "link", "show"], ["ip", "link", "add"]) else 0
+            return result
+
+        mock_run.side_effect = fake_run
+        wg = WireGuardInterface("test0")
+        wg.private_key, wg.public_key = "priv", "pub"
+        assert await wg.configure_interface("priv") is False       # logged, not a crash
+
     @patch('subprocess.run')
     async def test_add_peer(self, mock_run):
         """Test adding a peer."""
