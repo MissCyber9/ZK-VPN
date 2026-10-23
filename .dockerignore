@@ -1,0 +1,21 @@
+# Keep secrets, local state and noise OUT of the build context (and therefore out of the image)
+.git
+.github
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.zkey
+*.ptau
+*.bundle
+.zkvpn-identity
+ceremony/
+zk/
+tests/
+**/__pycache__
+**/*.pyc
+*.egg-info
+.pytest_cache
+.coverage
+node_modules

@@ -1,0 +1,19 @@
+# docker compose up -d --build
+# Copy .env.example to .env (git-ignored) and fill in ZKVPN_PRIVATE_KEY first:
+#   docker run --rm zkvpn wg genkey
+services:
+  zkvpn:
+    build: .
+    image: zkvpn:local
+    restart: unless-stopped
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    ports:
+      - "51820:51820/udp"     # WireGuard
+      - "51821:51821/tcp"     # ZK admission
+    env_file: .env
+    # production: use keys from a multi-party ceremony instead of the development ones
+    # volumes: ["./keys:/data/zk:ro"]
+    # environment: {ZKVPN_ZK_DIR: /data/zk}

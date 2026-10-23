@@ -99,6 +99,14 @@ def ns_kill_all(ns):
             pass
 
 
+def kill_tunnel(ns, iface):
+    """The tunnel dies abruptly. With wireguard-go the interface vanishes with the process; a
+    kernel WireGuard interface survives it, so it is removed explicitly (same end state)."""
+    ns_kill_all(ns)
+    sh("ip", "link", "del", iface, ns=ns, check=False)
+    wait_for(lambda: iface_gone(ns, iface), 10, "tunnel interface to vanish")
+
+
 def probe(timeout=3, ns=CLI, v6=False):
     """From `ns`, ask the web site who it sees. None = unreachable."""
     family, addr = ("AF_INET6", WEB_IP6) if v6 else ("AF_INET", WEB_IP)
@@ -381,8 +389,7 @@ def test_killswitch_stops_leak_when_tunnel_dies(server, identities, clean_client
     assert probe(8) == f"you_are={SRV_IP}"
     before = isp_leak_packets()
     # the tunnel dies abruptly (WireGuard process killed -> interface and routes vanish)
-    ns_kill_all(CLI)
-    wait_for(lambda: iface_gone(CLI, CLI_IF), 10, "tunnel interface to vanish")
+    kill_tunnel(CLI, CLI_IF)
     assert "dev zkcli0" not in sh("ip", "route", ns=CLI).stdout, "routes should be gone with the link"
     assert probe(3) is None, "kill-switch must block the direct path"
     assert isp_leak_packets() == before, "no packet may reach the web site outside the tunnel"
@@ -393,8 +400,7 @@ def test_without_killswitch_the_same_failure_leaks(server, identities, clean_cli
     r = connect(server, identities["alice"][0], {"ZKVPN_KILLSWITCH_ENABLED": "false"})
     assert r.returncode == 0, r.stdout + r.stderr
     before = isp_leak_packets()
-    ns_kill_all(CLI)
-    wait_for(lambda: iface_gone(CLI, CLI_IF), 10, "tunnel interface to vanish")
+    kill_tunnel(CLI, CLI_IF)
     assert probe(5) == f"you_are={CLI_IP}"                  # traffic escaped in clear
     assert isp_leak_packets() > before
 
@@ -442,8 +448,7 @@ def test_plain_dns_is_blocked_outside_the_tunnel(server, identities, clean_clien
     """DNS protection alone (kill-switch off) must stop plain DNS if the tunnel dies."""
     env = {**DNS_ENV, "ZKVPN_KILLSWITCH_ENABLED": "false"}
     assert connect(server, identities["alice"][0], env).returncode == 0
-    ns_kill_all(CLI)
-    wait_for(lambda: iface_gone(CLI, CLI_IF), 10, "tunnel interface to vanish")
+    kill_tunnel(CLI, CLI_IF)
     open(DNS_LOG, "w").close()
     assert probe(4) == f"you_are={CLI_IP}"       # non-DNS traffic escapes (kill-switch is off)...
     assert resolve_from_client() is None          # ...but DNS does not
