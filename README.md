@@ -78,8 +78,7 @@ tests/distro/run.sh ubuntu:24.04 --e2e        # installer + real systemd service
 CI (`.github/workflows/ci.yml`) runs all of this on Linux, macOS and Windows.
 
 ## Public repository: what is never in it
-No keys, identities, `.env` files, personal e-mail addresses or machine paths. Contributions use
-GitHub's `noreply` address. Tests (`tests/test_repo_hygiene.py`) and a history scan (gitleaks)
+Contributions use GitHub's `noreply` address. Tests (`tests/test_repo_hygiene.py`) and a history scan (gitleaks)
 check this on every push. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
